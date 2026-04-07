@@ -37,7 +37,7 @@ app.add_middleware(
 # ============================================================================
 
 # YOLO model for object detection
-model = YOLO("src/yolov8n.pt")
+model = YOLO("src/yolo26s.pt")
 
 # Spatial Engine - STATEFUL, persists across requests
 spatial_engine = SpatialEngine()
@@ -71,7 +71,7 @@ def health():
     return {
         "status": "SightViz Backend Online",
         "engine": "ready",
-        "model": "yolov8n",
+        "model": "yolo26s",
         "version": "2.0.0"
     }
 
@@ -195,7 +195,7 @@ async def startup_event():
     """Log startup info"""
     print("=" * 60)
     print("[STARTUP] SightViz Backend Starting...")
-    print(f"   Model: YOLOv8n")
+    print(f"   Model: YOLO26s")
     print(f"   Spatial Engine: Initialized")
     print(f"   Debug Mode: {os.getenv('DEBUG', '0')}")
     print("=" * 60)

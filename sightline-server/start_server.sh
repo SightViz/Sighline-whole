@@ -29,8 +29,8 @@ if ! python -c "import fastapi" 2>/dev/null; then
 fi
 
 # Check for YOLO model
-if [ ! -f "src/yolov8n.pt" ]; then
-    echo "⚠️  WARNING: YOLO model not found at src/yolov8n.pt"
+if [ ! -f "src/yolo26s.pt" ]; then
+    echo "⚠️  WARNING: YOLO model not found at src/yolo26s.pt"
     echo "The server may fail to start."
 fi
 

@@ -4,6 +4,7 @@
  */
 
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImageManipulator from "expo-image-manipulator";
 import { RefObject } from "react";
 
 export interface CameraFrame {
@@ -36,22 +37,34 @@ export const captureFrame = async (
       return null;
     }
 
-    // Take a picture with low quality for faster processing
+    // Take a picture at moderate quality
     const photo = await cameraRef.current.takePictureAsync({
-      quality: 0.3, // Low quality for faster capture and smaller size
-      base64: true, // Include base64 for easy API transmission
-      skipProcessing: true, // Skip extra processing for speed
+      quality: 0.7, // Good quality for the initial capture
+      base64: false,
+      skipProcessing: true,
     });
 
     if (!photo) {
       return null;
     }
 
+    // Resize the image to reduce payload size while maintaining quality
+    // Target: 1024px width max (maintains aspect ratio)
+    const resized = await ImageManipulator.manipulateAsync(
+      photo.uri,
+      [{ resize: { width: 1024 } }], // Resize to max 1024px width
+      {
+        compress: 0.7, // JPEG compression quality
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: true, // Include base64 for API transmission
+      }
+    );
+
     return {
-      uri: photo.uri,
-      base64: photo.base64,
-      width: photo.width,
-      height: photo.height,
+      uri: resized.uri,
+      base64: resized.base64,
+      width: resized.width,
+      height: resized.height,
       timestamp: Date.now(),
     };
   } catch (error) {

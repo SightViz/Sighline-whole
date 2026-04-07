@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import Constants from "expo-constants";
 
 /**
  * Service Configuration
@@ -6,23 +6,23 @@ import { Platform } from "react-native";
  */
 
 /**
- * Get the base URL based on platform
- * - Android emulator: 10.0.2.2 (maps to host localhost)
- * - iOS simulator: localhost (works directly)
- * - Physical device: Use your computer's IP address
+ * Get the base URL from environment variables
+ * Falls back to production server if not configured
  */
 const getBaseURL = (): string => {
-  if (Platform.OS === "android") {
-    // Android emulator uses 10.0.2.2 to reach host machine
-    return "http://192.168.10.102:6969";
-  } else if (Platform.OS === "ios") {
-    // iOS simulator can use localhost directly
-    return "http://192.168.10.102:6969";
-  } else {
-    // For physical devices, you'll need to set your computer's IP
-    // Example: "http://192.168.1.100:6969"
-    return "http://192.168.10.102:6969";
-  }
+  console.log("[SightViz Config] Loading API URL...");
+  console.log("[SightViz Config] Constants.expoConfig:", Constants.expoConfig);
+  console.log("[SightViz Config] Constants.manifest:", Constants.manifest);
+  console.log("[SightViz Config] Constants.manifest2:", Constants.manifest2);
+  
+  // Try multiple sources for API_URL (needed for production builds)
+  let apiUrl = 
+    Constants.expoConfig?.extra?.API_URL ||
+    Constants.manifest2?.extra?.expoClient?.extra?.API_URL ||
+    "https://sightviz.fabxdev.me"; // Hardcoded fallback
+  
+  console.log("[SightViz Config] Resolved API URL:", apiUrl);
+  return apiUrl;
 };
 
 /**

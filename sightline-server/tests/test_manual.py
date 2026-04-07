@@ -8,7 +8,7 @@ import time
 import json
 
 # Backend URL
-API_URL = "http://localhost:8000"
+API_URL = "https://sightviz.fabxdev.me"
 
 def test_analyze_endpoint():
     """Test the /analyze endpoint with sample images"""
@@ -28,8 +28,7 @@ def test_analyze_endpoint():
     
     # Test with sample images (if they exist)
     test_images = [
-        "test_images/person_close.jpg",
-        "test_images/empty_hallway.jpg",
+        "test_images/cut_paddings.webp",
     ]
     
     print("\n" + "=" * 60)

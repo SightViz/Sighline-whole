@@ -2,7 +2,7 @@ const { getDefaultConfig } = require("expo/metro-config");
 
 const config = getDefaultConfig(__dirname);
 
-// Add support for model files
-config.resolver.assetExts.push("onnx", "bin", "tflite");
+// Note: Model files are now handled server-side
+// No custom asset extensions needed for production
 
 module.exports = config;

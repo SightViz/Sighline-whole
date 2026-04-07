@@ -8,6 +8,7 @@ import { getDetectionEndpoint } from "./config";
 
 // API Configuration
 const DETECTION_ENDPOINT = getDetectionEndpoint();
+console.log("[SightViz Detection] Detection endpoint initialized:", DETECTION_ENDPOINT);
 
 export interface DetectionResult {
   objects: DetectedObject[];
@@ -56,12 +57,12 @@ interface AnalyzeResponse {
     latency_ms: number;
     num_detections: number;
     raw_yolo_count: number;
-    detections: Array<{
+    detections: {
       label: string;
       direction: string;
       distance: string;
       confidence: number;
-    }>;
+    }[];
   };
 }
 
@@ -124,6 +125,7 @@ export const detectObjectsInFrame = async (
     console.log("=== SENDING API REQUEST ===");
     console.log("Endpoint:", DETECTION_ENDPOINT);
     console.log("Frame URI:", frame.uri);
+    console.log("Timestamp:", new Date().toISOString());
     
     // Create FormData for file upload
     const formData = new FormData();
@@ -137,19 +139,32 @@ export const detectObjectsInFrame = async (
     });
 
     console.log("FormData created, sending POST request...");
+    console.log("Request URL:", DETECTION_ENDPOINT);
+    console.log("Request method: POST");
     
     // Send to FastAPI server
     const apiResponse = await fetch(DETECTION_ENDPOINT, {
       method: "POST",
       body: formData,
+      headers: {
+        'Accept': 'application/json',
+      },
     });
 
+    console.log("API Response received!");
     console.log("API Response status:", apiResponse.status);
+    console.log("API Response headers:", JSON.stringify(apiResponse.headers));
     
     if (!apiResponse.ok) {
       const errorText = await apiResponse.text();
       console.error("API Error Response:", errorText);
-      throw new Error(`API request failed: ${apiResponse.status}`);
+      
+      // Specific handling for 413 Payload Too Large
+      if (apiResponse.status === 413) {
+        throw new Error(`Server payload limit exceeded (413). Image already resized to 1024px.`);
+      }
+      
+      throw new Error(`API request failed: ${apiResponse.status} - ${errorText}`);
     }
 
     const data: APIDetectionResponse = await apiResponse.json();
@@ -181,7 +196,20 @@ export const detectObjectsInFrame = async (
       processingTime,
     };
   } catch (error) {
-    console.error("Error detecting objects:", error);
+    console.error("=== ERROR DETECTING OBJECTS ===");
+    console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error);
+    console.error("Error message:", error instanceof Error ? error.message : String(error));
+    console.error("Full error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    console.error("Endpoint was:", DETECTION_ENDPOINT);
+    console.error("===============================");
+    
+    // Check for specific error types
+    if (error instanceof TypeError && error.message.includes("Network")) {
+      console.error("NETWORK ERROR: Cannot reach server. Check:");
+      console.error("1. Server is running at", DETECTION_ENDPOINT);
+      console.error("2. Device has internet connection");
+      console.error("3. Firewall/security settings allow connection");
+    }
     
     // Fallback to demo mode if API fails
     console.warn("API detection failed, using demo mode");
@@ -204,6 +232,7 @@ export const analyzeFrameWithSpatialEngine = async (
     const analyzeEndpoint = DETECTION_ENDPOINT.replace('/detect', '/analyze');
     console.log("Endpoint:", analyzeEndpoint);
     console.log("Frame URI:", frame.uri);
+    console.log("Timestamp:", new Date().toISOString());
     
     // Create FormData for file upload
     const formData = new FormData();
@@ -216,19 +245,27 @@ export const analyzeFrameWithSpatialEngine = async (
       name: `frame_${frame.timestamp}.jpg`,
     });
 
-    console.log("Sending to Spatial Engine...");
+    console.log("FormData created, sending to Spatial Engine...");
+    console.log("Request URL:", analyzeEndpoint);
     
     // Send to FastAPI /analyze endpoint
     const apiResponse = await fetch(analyzeEndpoint, {
       method: "POST",
       body: formData,
+      headers: {
+        'Accept': 'application/json',
+      },
     });
-
-    console.log("API Response status:", apiResponse.status);
     
     if (!apiResponse.ok) {
       const errorText = await apiResponse.text();
       console.error("API Error Response:", errorText);
+      
+      // Specific handling for 413 Payload Too Large
+      if (apiResponse.status === 413) {
+        throw new Error(`Image too large (413). Server cannot process this size.`);
+      }
+      
       throw new Error(`API request failed: ${apiResponse.status}`);
     }
 
@@ -250,10 +287,21 @@ export const analyzeFrameWithSpatialEngine = async (
     return data.speech;
     
   } catch (error) {
-    console.error("Error analyzing frame with Spatial Engine:", error);
+    console.error("=== ERROR ANALYZING WITH SPATIAL ENGINE ===");
+    console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error);
+    console.error("Error message:", error instanceof Error ? error.message : String(error));
+    console.error("Full error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    console.error("Endpoint was:", DETECTION_ENDPOINT.replace('/detect', '/analyze'));
+    console.error("==========================================");
     
-    // Return null on error (silence is safe)
-    return null;
+    // Check for specific error types
+    if (error instanceof TypeError && error.message.includes("Network")) {
+      console.error("NETWORK ERROR: Cannot reach Spatial Engine server");
+      throw new Error(`Network Error: Cannot reach ${DETECTION_ENDPOINT.replace('/detect', '/analyze')}`);
+    }
+    
+    // Re-throw the error so UI can display it
+    throw error;
   }
 };
 

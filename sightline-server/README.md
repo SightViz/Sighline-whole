@@ -135,7 +135,7 @@ sightline-server/
     basetrack.py           # Base tracking classes
     byte_tracker.py        # ByteTrack implementation
     bytetrack_all80.yaml   # Tracker configuration
-    yolov8n.pt            # YOLO model weights
+    yolo26s.pt             # YOLO model weights
  sightenv/                  # Virtual environment
  pyproject.toml            # Project configuration
  README.md                 # This file
@@ -159,7 +159,13 @@ ruff check src/
 
 ## Model Information
 
-The server uses YOLOv8n (nano) model for object detection. The model file `yolov8n.pt` should be present in the `src/` directory.
+The server uses YOLO26s (small) model for object detection. The model file `yolo26s.pt` should be present in the `src/` directory.
+
+**Model Performance:**
+- Better accuracy than YOLOv8n
+- mAP: 48.6 (vs 37.3 for YOLOv8n)
+- Params: 9.5M (vs 3.2M for YOLOv8n)
+- Speed: ~2.5ms per image on GPU
 
 ## CORS Configuration
 
@@ -183,7 +189,7 @@ pip install --upgrade -e .
 
 ### YOLO Model Not Found
 
-Ensure `yolov8n.pt` is in the `src/` directory. If missing, it will be automatically downloaded on first run.
+Ensure `yolo26s.pt` is in the `src/` directory. Download it from Ultralytics if missing.
 
 ## License
 

@@ -1,6 +1,7 @@
 import { CameraComponent } from "@/components/camera-component";
 import { MaterialIcons } from "@expo/vector-icons";
 import { CameraView } from "expo-camera";
+import * as ImageManipulator from "expo-image-manipulator";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Speech from "expo-speech";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -27,12 +28,10 @@ import {
   formatDetectionForSpeech,
   analyzeFrameWithSpatialEngine,
 } from "../services/detectionService";
-import V2Demo from "./pages/v2_demo";
-import V3TFLite from "./pages/v3_tflite";
 
 type AppState = "idle" | "running" | "error";
 type TabType = "scan" | "engine" | "history" | "more";
-type MoreOption = "settings" | "v2" | "v3" | null;
+type MoreOption = "settings" | null;
 type Theme = "light" | "dark";
 
 interface SessionHistory {
@@ -122,6 +121,8 @@ export default function SightlineApp() {
   const [silenceCount, setSilenceCount] = useState<number>(0);
   const [speechCount, setSpeechCount] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [debugInfo, setDebugInfo] = useState<string[]>([]);
+  const [scanDebugInfo, setScanDebugInfo] = useState<string[]>([]);
   
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
@@ -146,6 +147,20 @@ export default function SightlineApp() {
   
   // Create theme-aware styles
   const styles = useMemo(() => createStyles(colors), [colors]);
+
+  // Log API configuration on mount
+  useEffect(() => {
+    import('../services/config').then(({ API_CONFIG }) => {
+      const apiUrl = API_CONFIG.BASE_URL;
+      const initMsg = [
+        `[${new Date().toLocaleTimeString()}] 🚀 App initialized`,
+        `[${new Date().toLocaleTimeString()}] 🌐 API: ${apiUrl}`,
+        `[${new Date().toLocaleTimeString()}] � Image: 1024px @ 0.7 quality (resized)`
+      ];
+      setDebugInfo(initMsg);
+      setScanDebugInfo(initMsg);
+    });
+  }, []);
 
   // Theme toggle
   const toggleTheme = () => {
@@ -192,12 +207,14 @@ export default function SightlineApp() {
 
     try {
       isProcessingRef.current = true;
+      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 📤 Sending frame...`]);
 
       // Store the captured frame for display
       setCapturedFrameUri(frame.uri);
 
       // Detect objects in the frame
       const result: DetectionResult = await detectObjectsInFrame(frame);
+      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ✅ Response received`]);
 
       console.log("Detection result:", result);
 
@@ -216,8 +233,11 @@ export default function SightlineApp() {
       console.log(
         `Detected ${result.objects.length} objects in ${result.processingTime}ms`,
       );
+      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 🔍 Found ${result.objects.length} objects`]);
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
       console.error("Error processing frame:", error);
+      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ❌ ${errorMsg}`]);
     } finally {
       isProcessingRef.current = false;
     }
@@ -352,36 +372,64 @@ export default function SightlineApp() {
 
     try {
       setIsProcessing(true);
+      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] Capturing frame...`]);
 
+      // Capture at good quality
       const photo = await spatialCameraRef.current.takePictureAsync({
-        quality: 0.8,
+        quality: 0.7,
         base64: false,
+        skipProcessing: true,
       });
 
       if (!photo) {
         console.log("Failed to capture photo");
+        setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ❌ Failed to capture photo`]);
         scheduleNextCapture();
         return;
       }
 
+      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] Resizing image...`]);
+      
+      // Resize to 1024px width to reduce payload size
+      const resized = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 1024 } }],
+        {
+          compress: 0.7,
+          format: ImageManipulator.SaveFormat.JPEG,
+        }
+      );
+
       const frame: CameraFrame = {
-        uri: photo.uri,
-        width: photo.width,
-        height: photo.height,
+        uri: resized.uri,
+        width: resized.width,
+        height: resized.height,
         timestamp: Date.now(),
       };
 
+      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 📤 Sending to API...`]);
       const speechOutput = await analyzeFrameWithSpatialEngine(frame);
+      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ✅ Response received`]);
 
       if (speechOutput) {
         console.log(`Speaking: "${speechOutput}"`);
+        setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 🔊 ${speechOutput}`]);
         speakSpatial(speechOutput);
+        setSpeechCount((prev) => prev + 1);
       } else {
         console.log("Silent");
+        setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 🔇 Silent`]);
         setSilenceCount((prev) => prev + 1);
       }
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
       console.error("Error processing frame:", error);
+      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ❌ ${errorMsg}`]);
+      
+      // If we get repeated network errors, speak it once
+      if (errorMsg.includes("Network") && speechCount === 0 && silenceCount === 0) {
+        speakSpatial("Network error. Cannot reach server.");
+      }
     } finally {
       setIsProcessing(false);
       scheduleNextCapture();
@@ -623,6 +671,26 @@ export default function SightlineApp() {
               </Text>
             </View>
           )}
+
+          {/* Debug Info Panel */}
+          {scanDebugInfo.length > 0 && (
+            <View style={styles.spatialLogCard}>
+              <View style={styles.spatialLogHeader}>
+                <MaterialIcons name="bug-report" size={18} color="#f59e0b" />
+                <Text style={styles.spatialLogTitle}>Debug Info</Text>
+              </View>
+              <ScrollView 
+                style={styles.spatialLogScroll}
+                showsVerticalScrollIndicator={false}
+              >
+                {scanDebugInfo.map((info, index) => (
+                  <Text key={index} style={[styles.spatialLogMessage, { fontSize: 11, color: '#64748b' }]}>
+                    {info}
+                  </Text>
+                ))}
+              </ScrollView>
+            </View>
+          )}
         </>
       );
     } else if (activeTab === "history") {
@@ -782,10 +850,6 @@ export default function SightlineApp() {
             </View>
           </>
         );
-      } else if (moreSelection === "v2") {
-        return <V2Demo />;
-      } else if (moreSelection === "v3") {
-        return <V3TFLite />;
       } else {
         // Show More menu
         return (
@@ -812,40 +876,6 @@ export default function SightlineApp() {
                 <View style={styles.moreOptionContent}>
                   <Text style={styles.moreOptionTitle}>Settings</Text>
                   <Text style={styles.moreOptionDescription}>Configure app preferences</Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={24} color="#64748b" />
-              </Pressable>
-
-              <Pressable 
-                style={({ pressed }) => [
-                  styles.moreOptionCard,
-                  pressed && styles.moreOptionCardPressed
-                ]}
-                onPress={() => setMoreSelection("v2")}
-              >
-                <View style={[styles.moreOptionIconContainer, { backgroundColor: "rgba(167, 139, 250, 0.15)" }]}>
-                  <MaterialIcons name="psychology" size={32} color="#a78bfa" />
-                </View>
-                <View style={styles.moreOptionContent}>
-                  <Text style={styles.moreOptionTitle}>V2 Detection</Text>
-                  <Text style={styles.moreOptionDescription}>TensorFlow.js model demo</Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={24} color="#64748b" />
-              </Pressable>
-
-              <Pressable 
-                style={({ pressed }) => [
-                  styles.moreOptionCard,
-                  pressed && styles.moreOptionCardPressed
-                ]}
-                onPress={() => setMoreSelection("v3")}
-              >
-                <View style={[styles.moreOptionIconContainer, { backgroundColor: "rgba(251, 191, 36, 0.15)" }]}>
-                  <MaterialIcons name="bolt" size={32} color="#fbbf24" />
-                </View>
-                <View style={styles.moreOptionContent}>
-                  <Text style={styles.moreOptionTitle}>V3 TFLite</Text>
-                  <Text style={styles.moreOptionDescription}>TensorFlow Lite integration</Text>
                 </View>
                 <MaterialIcons name="chevron-right" size={24} color="#64748b" />
               </Pressable>
@@ -981,6 +1011,28 @@ export default function SightlineApp() {
               <Text style={styles.spatialButtonText}>{stateText[spatialAppState]}</Text>
             </LinearGradient>
           </Pressable>
+
+          {/* Debug Info Panel */}
+          <View style={styles.spatialLogCard}>
+            <View style={styles.spatialLogHeader}>
+              <MaterialIcons name="bug-report" size={18} color="#f59e0b" />
+              <Text style={styles.spatialLogTitle}>Debug Info</Text>
+            </View>
+            <ScrollView 
+              style={styles.spatialLogScroll}
+              showsVerticalScrollIndicator={false}
+            >
+              {debugInfo.length === 0 ? (
+                <Text style={styles.spatialLogEmpty}>Waiting for activity...</Text>
+              ) : (
+                debugInfo.map((info, index) => (
+                  <Text key={index} style={[styles.spatialLogMessage, { fontSize: 11, color: '#64748b' }]}>
+                    {info}
+                  </Text>
+                ))
+              )}
+            </ScrollView>
+          </View>
 
           {/* Speech Log */}
           <View style={styles.spatialLogCard}>
