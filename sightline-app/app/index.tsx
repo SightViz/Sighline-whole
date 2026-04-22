@@ -3,6 +3,7 @@ import {
     SettingsPanel,
     type SpeechLanguage,
 } from "@/components/settings-panel";
+import { TextScanPanel } from "@/components/text-scan-panel";
 import {
     colors,
     gradients,
@@ -44,7 +45,7 @@ import {
 type AppState = "idle" | "running" | "error";
 type ScanMode = "normal" | "engine";
 type TabType = "home" | "engine" | "saveFaces" | "more";
-type MoreSection = "menu" | "settings" | "history" | "about";
+type MoreSection = "menu" | "settings" | "history" | "about" | "textScan";
 
 interface SessionHistory {
   id: string;
@@ -275,6 +276,27 @@ export default function SightlineApp() {
       .then(setServerFaces)
       .catch((err) => console.warn("[Faces] Could not fetch enrolled faces:", err));
   }, []);
+
+  const captureForTextScan = async (): Promise<string | null> => {
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        speak("Camera permission denied. Please enable camera access.");
+        return null;
+      }
+    }
+    if (!cameraRef.current) return null;
+    try {
+      const shot = await cameraRef.current.takePictureAsync({
+        quality: 0.85,
+        skipProcessing: true,
+      });
+      return shot?.uri ?? null;
+    } catch (err) {
+      console.error("[TextScan] capture failed:", err);
+      return null;
+    }
+  };
 
   const saveFaceProfile = async () => {
     const cleanName = faceNameDraft.trim();
@@ -809,6 +831,25 @@ export default function SightlineApp() {
 
         <Pressable
           style={styles.moreRow}
+          onPress={() => setMoreSection("textScan")}
+        >
+          <View style={styles.moreRowLeft}>
+            <MaterialIcons
+              name="document-scanner"
+              size={18}
+              color={colors.textPrimary}
+            />
+            <Text style={styles.moreRowText}>Text Scanning</Text>
+          </View>
+          <MaterialIcons
+            name="chevron-right"
+            size={20}
+            color={colors.textMuted}
+          />
+        </Pressable>
+
+        <Pressable
+          style={styles.moreRow}
           onPress={() => setMoreSection("about")}
         >
           <View style={styles.moreRowLeft}>
@@ -825,13 +866,6 @@ export default function SightlineApp() {
             color={colors.textMuted}
           />
         </Pressable>
-
-        <View style={styles.moreFutureCard}>
-          <Text style={styles.moreFutureTitle}>Future Pages</Text>
-          <Text style={styles.moreFutureText}>
-            New pages will be added under More to keep the bottom bar focused.
-          </Text>
-        </View>
       </ScrollView>
     );
   };
@@ -879,6 +913,18 @@ export default function SightlineApp() {
       );
     }
 
+    if (moreSection === "textScan") {
+      return (
+        <View style={styles.contentArea}>
+          {renderMoreSubHeader("Text Scanning")}
+          <TextScanPanel
+            captureImage={captureForTextScan}
+            speak={speak}
+          />
+        </View>
+      );
+    }
+
     return (
       <ScrollView
         style={styles.tabScroll}
@@ -908,7 +954,11 @@ export default function SightlineApp() {
     <View style={styles.root}>
       <CameraComponent
         ref={cameraRef}
-        isActive={appState === "running" || activeTab === "saveFaces"}
+        isActive={
+          appState === "running" ||
+          activeTab === "saveFaces" ||
+          (activeTab === "more" && moreSection === "textScan")
+        }
       />
 
       <LinearGradient

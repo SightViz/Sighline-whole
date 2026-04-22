@@ -7,10 +7,13 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 from PIL import Image
+from openai import AsyncOpenAI
 import io
 import uuid
 import time
 import os
+import json
+import base64
 from typing import List, Optional
 from pydantic import BaseModel
 
@@ -69,6 +72,20 @@ class FaceListResponse(BaseModel):
     faces: dict  # name -> photo count
 
 
+class OCRResponse(BaseModel):
+    text: str
+    summary: str
+
+
+class OCRChatRequest(BaseModel):
+    context: str
+    question: str
+
+
+class OCRChatResponse(BaseModel):
+    answer: str
+
+
 # ============================================================================
 # HELPERS
 # ============================================================================
@@ -108,7 +125,7 @@ def _enrich_with_faces(detections, image: Image.Image):
 def health():
     return {
         "status": "SightViz Backend Online",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "endpoints": {
             "detection": ["POST /detect", "POST /analyze"],
             "faces": [
@@ -116,7 +133,9 @@ def health():
                 "GET /faces/list",
                 "DELETE /faces/{name}",
             ],
+            "ocr": ["POST /ocr", "POST /ocr/chat"],
         },
+        "ocr_available": bool(os.getenv("OPENAI_API_KEY")),
     }
 
 
@@ -255,6 +274,119 @@ def faces_delete(name: str):
     return {"success": True, "message": f"'{name}' removed from database."}
 
 
+# --- OCR and document AI ---
+
+@app.post("/ocr", response_model=OCRResponse)
+async def ocr_scan(file: UploadFile = File(...)):
+    """
+    Extract text from a document image using GPT-4o vision.
+    Returns the raw OCR text and a concise spoken summary.
+    Requires OPENAI_API_KEY environment variable.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OCR not available. Set OPENAI_API_KEY environment variable.",
+        )
+
+    try:
+        image_bytes = await file.read()
+        content_type = file.content_type or "image/jpeg"
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        client = AsyncOpenAI(api_key=api_key)
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "You are an OCR assistant for a visually impaired user.\n"
+                                "1. Extract ALL visible text from this document image.\n"
+                                "2. Write a concise spoken summary (2-4 sentences) that describes "
+                                "what kind of document this is and its key information, "
+                                "as if reading it aloud to someone who cannot see it.\n"
+                                "Respond with JSON only:\n"
+                                '{"text": "full extracted text", "summary": "spoken summary"}'
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{content_type};base64,{b64_image}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                }
+            ],
+            max_tokens=3000,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content or "{}"
+        parsed = json.loads(content)
+        return OCRResponse(
+            text=parsed.get("text", "").strip(),
+            summary=parsed.get("summary", "No summary available.").strip(),
+        )
+    except Exception as e:
+        print(f"[ERROR] /ocr failed: {e}")
+        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
+
+
+@app.post("/ocr/chat", response_model=OCRChatResponse)
+async def ocr_chat(body: OCRChatRequest):
+    """
+    Answer a user's question about a previously scanned document.
+    The document's extracted text is passed as context.
+    Requires OPENAI_API_KEY environment variable.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="AI chat not available. Set OPENAI_API_KEY environment variable.",
+        )
+
+    if not body.context.strip():
+        raise HTTPException(status_code=422, detail="Document context must not be empty.")
+    if not body.question.strip():
+        raise HTTPException(status_code=422, detail="Question must not be empty.")
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant for a visually impaired user. "
+                        "The user has scanned a document. Here is the extracted text:\n\n"
+                        "---\n"
+                        f"{body.context}\n"
+                        "---\n\n"
+                        "Answer the user's question about this document clearly and concisely "
+                        "in 1-3 sentences. Keep your response suitable for text-to-speech."
+                    ),
+                },
+                {"role": "user", "content": body.question},
+            ],
+            max_tokens=300,
+        )
+
+        answer = (response.choices[0].message.content or "I could not find an answer.").strip()
+        return OCRChatResponse(answer=answer)
+    except Exception as e:
+        print(f"[ERROR] /ocr/chat failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
 # ============================================================================
 # STARTUP / SHUTDOWN
 # ============================================================================
@@ -266,6 +398,7 @@ async def startup_event():
     print(f"   YOLO model: yolo26s.pt")
     print(f"   Spatial Engine: ready")
     print(f"   Face Recognition: ready (models lazy-load on first call)")
+    print(f"   OCR / AI Chat: {'ready' if os.getenv('OPENAI_API_KEY') else 'disabled (set OPENAI_API_KEY)'}")
     print(f"   Debug: {os.getenv('DEBUG', '0')}")
     print("=" * 60)
 

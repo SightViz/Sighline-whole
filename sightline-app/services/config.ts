@@ -31,6 +31,8 @@ export const API_CONFIG = {
     FACES_ENROLL: "/faces/enroll",
     FACES_LIST: "/faces/list",
     FACES_DELETE: (name: string) => `/faces/${encodeURIComponent(name)}`,
+    OCR: "/ocr",
+    OCR_CHAT: "/ocr/chat",
   },
 
   // Request timeouts (ms)
@@ -62,4 +64,12 @@ export const getFacesListEndpoint = (): string => {
 
 export const getFacesDeleteEndpoint = (name: string): string => {
   return `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.FACES_DELETE(name)}`;
+};
+
+export const getOCREndpoint = (): string => {
+  return `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OCR}`;
+};
+
+export const getOCRChatEndpoint = (): string => {
+  return `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OCR_CHAT}`;
 };

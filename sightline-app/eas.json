@@ -8,19 +8,22 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "API_URL": "https://sightviz.fabxdev.me"
+        "API_URL": "https://sightviz.fabxdev.me",
+        "GPT_API_KEY": ""
       }
     },
     "preview": {
       "distribution": "internal",
       "env": {
-        "API_URL": "https://sightviz.fabxdev.me"
+        "API_URL": "https://sightviz.fabxdev.me",
+        "GPT_API_KEY": ""
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "API_URL": "https://sightviz.fabxdev.me"
+        "API_URL": "https://sightviz.fabxdev.me",
+        "GPT_API_KEY": ""
       }
     }
   },

@@ -1,8 +1,8 @@
 const baseConfig = require("./app.base.json");
 
 module.exports = () => {
-  // Read API_URL from environment variable (set by eas.json during build)
   const API_URL = process.env.API_URL || "https://sightviz.fabxdev.me";
+  const GPT_API_KEY = process.env.GPT_API_KEY || "";
 
   return {
     ...baseConfig,
@@ -10,8 +10,8 @@ module.exports = () => {
       ...baseConfig.expo,
       extra: {
         ...baseConfig.expo.extra,
-        // Override API_URL with environment variable or fallback
-        API_URL: API_URL,
+        API_URL,
+        GPT_API_KEY,
       },
     },
   };

@@ -14,6 +14,9 @@ config.resolver = {
   ...resolver,
   assetExts: resolver.assetExts.filter((ext) => ext !== "svg"),
   sourceExts: [...resolver.sourceExts, "svg"],
+  // Required for packages that use package.json "exports" sub-path imports
+  // (e.g. zod/v4 used by @ai-sdk/openai)
+  unstable_enablePackageExports: true,
 };
 
 module.exports = config;
