@@ -1,2 +1,8 @@
 docs/
 sightline-app/.env
+
+# Large model files — store these outside git (use DVC, HuggingFace Hub, or cloud storage)
+*.pt
+*.pth
+*.onnx
+*.bin
