@@ -1,38 +1,50 @@
 import { CameraComponent } from "@/components/camera-component";
+import {
+    SettingsPanel,
+    type SpeechLanguage,
+} from "@/components/settings-panel";
+import {
+    colors,
+    gradients,
+    radius,
+    shadows,
+    spacing,
+} from "@/constants/design-system";
 import { MaterialIcons } from "@expo/vector-icons";
 import { CameraView } from "expo-camera";
-import * as ImageManipulator from "expo-image-manipulator";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Speech from "expo-speech";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AccessibilityInfo,
-  Animated,
-  Dimensions,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
+    AccessibilityInfo,
+    Image,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
-  CameraFrame,
-  startFrameCapture,
-  useCameraPermissions,
+    CameraFrame,
+    startFrameCapture,
+    useCameraPermissions,
 } from "../services/cameraService";
 import {
-  DetectionResult,
-  detectObjectsInFrame,
-  formatDetectionForSpeech,
-  analyzeFrameWithSpatialEngine,
+    DetectionResult,
+    analyzeFrameWithSpatialEngine,
+    detectObjectsInFrame,
+    enrollFaceProfile,
+    fetchEnrolledFaces,
+    formatDetectionForSpeech,
+    type FaceProfile,
 } from "../services/detectionService";
 
 type AppState = "idle" | "running" | "error";
-type TabType = "scan" | "engine" | "history" | "more";
-type MoreOption = "settings" | null;
-type Theme = "light" | "dark";
+type ScanMode = "normal" | "engine";
+type TabType = "home" | "engine" | "saveFaces" | "more";
+type MoreSection = "menu" | "settings" | "history" | "about";
 
 interface SessionHistory {
   id: string;
@@ -43,218 +55,153 @@ interface SessionHistory {
   detections: string[];
 }
 
-const { width } = Dimensions.get("window");
+// Server-side face profile shape
+type ServerFaceProfile = FaceProfile;
 
-// Theme Colors
-const themes = {
-  light: {
-    background: ["#f8fafc", "#f1f5f9", "#e2e8f0"],
-    card: "rgba(255, 255, 255, 0.95)",
-    cardBorder: "rgba(148, 163, 184, 0.3)",
-    text: "#0f172a",
-    textSecondary: "#475569",
-    textTertiary: "#64748b",
-    primary: "#3b82f6",
-    primaryLight: "rgba(59, 130, 246, 0.15)",
-    success: "#10b981",
-    successLight: "rgba(16, 185, 129, 0.15)",
-    warning: "#f59e0b",
-    warningLight: "rgba(245, 158, 11, 0.15)",
-    error: "#ef4444",
-    errorLight: "rgba(239, 68, 68, 0.15)",
-    tabBar: "rgba(255, 255, 255, 0.98)",
-    tabBarBorder: "rgba(148, 163, 184, 0.2)",
-    statusBadge: "rgba(226, 232, 240, 0.8)",
-    statusBadgeActive: "rgba(16, 185, 129, 0.2)",
-    statusDot: "#94a3b8",
-    statusDotActive: "#10b981",
-    overlay: "rgba(15, 23, 42, 0.15)",
-    icon: "#3b82f6",
-    iconSecondary: "#64748b",
-    shadow: "rgba(15, 23, 42, 0.1)",
-  },
-  dark: {
-    background: ["#0a0f1e", "#151b2e", "#1e293b"],
-    card: "rgba(30, 41, 59, 0.8)",
-    cardBorder: "rgba(71, 85, 105, 0.5)",
-    text: "#ffffff",
-    textSecondary: "#94a3b8",
-    textTertiary: "#64748b",
-    primary: "#60a5fa",
-    primaryLight: "rgba(96, 165, 250, 0.15)",
-    success: "#10b981",
-    successLight: "rgba(16, 185, 129, 0.15)",
-    warning: "#fbbf24",
-    warningLight: "rgba(251, 191, 36, 0.15)",
-    error: "#f87171",
-    errorLight: "rgba(248, 113, 113, 0.15)",
-    tabBar: "rgba(8, 20, 35, 0.98)",
-    tabBarBorder: "rgba(96, 165, 250, 0.2)",
-    statusBadge: "rgba(71, 85, 105, 0.4)",
-    statusBadgeActive: "rgba(16, 185, 129, 0.2)",
-    statusDot: "#64748b",
-    statusDotActive: "#10b981",
-    overlay: "rgba(0, 0, 0, 0.25)",
-    icon: "#60a5fa",
-    iconSecondary: "#94a3b8",
-    shadow: "rgba(0, 0, 0, 0.3)",
-  },
-};
+const headerLogo = require("@/assets/images/logo.png");
 
 export default function SightlineApp() {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [activeTab, setActiveTab] = useState<TabType>("home");
+  const [scanMode, setScanMode] = useState<ScanMode>("normal");
+  const [moreSection, setMoreSection] = useState<MoreSection>("menu");
   const [appState, setAppState] = useState<AppState>("idle");
-  const [activeTab, setActiveTab] = useState<TabType>("scan");
-  const [moreSelection, setMoreSelection] = useState<MoreOption>(null);
   const [objectsDetected, setObjectsDetected] = useState<number>(0);
   const [sessionTime, setSessionTime] = useState<string>("0:00");
   const [lastSpokenText, setLastSpokenText] = useState<string>("");
+  const [speechLanguage, setSpeechLanguage] =
+    useState<SpeechLanguage>("English");
+  const [audioLevel, setAudioLevel] = useState<number>(90);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [sessionHistory, setSessionHistory] = useState<SessionHistory[]>([]);
   const [currentDetections, setCurrentDetections] = useState<string[]>([]);
   const [capturedFrameUri, setCapturedFrameUri] = useState<string | null>(null);
+  const [faceNameDraft, setFaceNameDraft] = useState<string>("");
+  const [faceShotsDraft, setFaceShotsDraft] = useState<string[]>([]);
+  const [isSavingFace, setIsSavingFace] = useState<boolean>(false);
+  const [serverFaces, setServerFaces] = useState<ServerFaceProfile[]>([]);
 
-  // Spatial Engine state
-  const [spatialAppState, setSpatialAppState] = useState<AppState>("idle");
-  const [spatialSessionTime, setSpatialSessionTime] = useState<string>("0:00");
-  const [lastSpeech, setLastSpeech] = useState<string>("Ready to start");
-  const [speechLog, setSpeechLog] = useState<{ time: string; message: string }[]>([]);
-  const [silenceCount, setSilenceCount] = useState<number>(0);
-  const [speechCount, setSpeechCount] = useState<number>(0);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [debugInfo, setDebugInfo] = useState<string[]>([]);
-  const [scanDebugInfo, setScanDebugInfo] = useState<string[]>([]);
-  
-  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isProcessingRef = useRef<boolean>(false);
-
-  // Spatial Engine refs
-  const spatialStartTimeRef = useRef<number>(0);
-  const spatialTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const captureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shouldContinueRef = useRef<boolean>(false);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-
-  // Camera state
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
-  const spatialCameraRef = useRef<CameraView>(null);
   const stopCaptureRef = useRef<(() => void) | null>(null);
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startTimeRef = useRef<number>(0);
+  const isProcessingRef = useRef<boolean>(false);
 
-  // Get current theme colors
-  const colors = themes[theme];
-  
-  // Create theme-aware styles
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const styles = useMemo(() => createStyles(), []);
 
-  // Log API configuration on mount
   useEffect(() => {
-    import('../services/config').then(({ API_CONFIG }) => {
-      const apiUrl = API_CONFIG.BASE_URL;
-      const initMsg = [
-        `[${new Date().toLocaleTimeString()}] 🚀 App initialized`,
-        `[${new Date().toLocaleTimeString()}] 🌐 API: ${apiUrl}`,
-        `[${new Date().toLocaleTimeString()}] � Image: 1024px @ 0.7 quality (resized)`
-      ];
-      setDebugInfo(initMsg);
-      setScanDebugInfo(initMsg);
-    });
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
+      if (stopCaptureRef.current) {
+        stopCaptureRef.current();
+      }
+    };
   }, []);
 
-  // Theme toggle
-  const toggleTheme = () => {
-    setTheme((prev) => (prev === "light" ? "dark" : "light"));
-  };
+  useEffect(() => {
+    if (isMuted) {
+      Speech.stop();
+    }
+  }, [isMuted]);
 
-  const speak = (text: string) => {
-    // Stop any ongoing speech
+  const handleAudioLevelChange = (next: number) => {
+    setAudioLevel(next);
     Speech.stop();
-
-    // Speak the text
-    Speech.speak(text, {
-      language: "en",
-      pitch: 1.0,
-      rate: 0.9, // Slightly slower for clarity
-    });
-
-    setLastSpokenText(text);
   };
 
-  const handleToggle = async () => {
-    if (appState === "idle") {
-      // Check camera permission
-      if (!permission?.granted) {
-        const result = await requestPermission();
-        if (!result.granted) {
-          setAppState("error");
-          speak("Camera permission denied. Please enable camera access.");
-          return;
-        }
-      }
-      startSightline();
-    } else if (appState === "running") {
-      stopSightline();
+  const handleMutedChange = (next: boolean) => {
+    setIsMuted(next);
+    if (next) {
+      Speech.stop();
     }
   };
 
+  const speak = (text: string) => {
+    setLastSpokenText(text);
+
+    if (isMuted) {
+      return;
+    }
+
+    Speech.stop();
+    Speech.speak(text, {
+      language: speechLanguage === "Hindi" ? "hi-IN" : "en-US",
+      volume: audioLevel / 100,
+      pitch: 1.0,
+      rate: 0.9,
+    });
+  };
+
   const handleFrameCaptured = async (frame: CameraFrame) => {
-    // Skip if still processing previous frame
     if (isProcessingRef.current) {
-      console.log("Still processing previous frame, skipping...");
       return;
     }
 
     try {
       isProcessingRef.current = true;
-      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 📤 Sending frame...`]);
-
-      // Store the captured frame for display
       setCapturedFrameUri(frame.uri);
 
-      // Detect objects in the frame
-      const result: DetectionResult = await detectObjectsInFrame(frame);
-      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ✅ Response received`]);
+      let announcement = "";
+      let detectedCount = 0;
 
-      console.log("Detection result:", result);
+      if (scanMode === "engine") {
+        try {
+          const speech = await analyzeFrameWithSpatialEngine(frame);
+          announcement = speech ?? "No new guidance";
+          detectedCount = speech ? 1 : 0;
+        } catch (engineError) {
+          console.error(
+            "Spatial engine failed, falling back to object detection",
+            engineError,
+          );
+          const fallbackResult: DetectionResult =
+            await detectObjectsInFrame(frame);
+          announcement = formatDetectionForSpeech(fallbackResult);
+          detectedCount = fallbackResult.objects.length;
+        }
+      } else {
+        const result: DetectionResult = await detectObjectsInFrame(frame);
+        announcement = formatDetectionForSpeech(result);
+        detectedCount = result.objects.length;
+      }
 
-      // Convert detection to speech
-      const announcement = formatDetectionForSpeech(result);
-
-      console.log("Announcement:", announcement);
-
-      // Speak the detection
       speak(announcement);
-
-      // Update stats
-      setObjectsDetected((prev) => prev + result.objects.length);
+      setObjectsDetected((prev) => prev + detectedCount);
       setCurrentDetections((prev) => [...prev, announcement]);
-
-      console.log(
-        `Detected ${result.objects.length} objects in ${result.processingTime}ms`,
-      );
-      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 🔍 Found ${result.objects.length} objects`]);
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
       console.error("Error processing frame:", error);
-      setScanDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ❌ ${errorMsg}`]);
     } finally {
       isProcessingRef.current = false;
     }
   };
 
-  const startSightline = () => {
+  const startSightline = async (mode: ScanMode) => {
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        setAppState("error");
+        speak("Camera permission denied. Please enable camera access.");
+        return;
+      }
+    }
+
+    setScanMode(mode);
     setAppState("running");
     setObjectsDetected(0);
     setSessionTime("0:00");
     setCurrentDetections([]);
+    setCapturedFrameUri(null);
     startTimeRef.current = Date.now();
 
-    // Initial announcement
-    speak("SightViz active. Scanning environment.");
-    AccessibilityInfo.announceForAccessibility("SightViz running.");
+    speak(
+      mode === "engine"
+        ? "Spatial engine active. Scanning space and nearby objects."
+        : "SightViz active. Scanning nearby objects.",
+    );
+    AccessibilityInfo.announceForAccessibility("SightViz running");
 
-    // Start timer immediately - updates every second
     timerIntervalRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
       const minutes = Math.floor(elapsed / 60);
@@ -262,25 +209,21 @@ export default function SightlineApp() {
       setSessionTime(`${minutes}:${seconds.toString().padStart(2, "0")}`);
     }, 1000);
 
-    // Start camera frame capture (attempts every 3 seconds, but waits for processing)
-    // Wait a bit for camera to initialize
     setTimeout(() => {
       if (cameraRef.current) {
         const stopCapture = startFrameCapture(
           cameraRef as React.RefObject<CameraView>,
           handleFrameCaptured,
-          3000, // Try every 3 seconds, but will skip if still processing
+          3000,
         );
         stopCaptureRef.current = stopCapture;
       }
-    }, 1000);
+    }, 900);
   };
 
   const stopSightline = () => {
-    // Reset processing flag
     isProcessingRef.current = false;
 
-    // Calculate final session duration
     const durationSeconds = Math.floor(
       (Date.now() - startTimeRef.current) / 1000,
     );
@@ -288,861 +231,742 @@ export default function SightlineApp() {
     const seconds = durationSeconds % 60;
     const finalDuration = `${minutes}:${seconds.toString().padStart(2, "0")}`;
 
-    // Save session to history
-    const newSession: SessionHistory = {
-      id: Date.now().toString(),
-      duration: finalDuration,
-      durationSeconds: durationSeconds,
-      objectsDetected: objectsDetected,
-      timestamp: new Date(),
-      detections: [...currentDetections],
-    };
+    setSessionHistory((prev) => [
+      {
+        id: Date.now().toString(),
+        duration: finalDuration,
+        durationSeconds,
+        objectsDetected,
+        timestamp: new Date(),
+        detections: [...currentDetections],
+      },
+      ...prev,
+    ]);
 
-    setSessionHistory((prev) => [newSession, ...prev]);
     setAppState("idle");
-    setCapturedFrameUri(null); // Clear the frame preview
 
-    // Stop camera capture
     if (stopCaptureRef.current) {
       stopCaptureRef.current();
       stopCaptureRef.current = null;
-    }
-
-    // Clear intervals
-    if (scanIntervalRef.current) {
-      clearInterval(scanIntervalRef.current);
-      scanIntervalRef.current = null;
     }
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
 
-    // Stop speech
     Speech.stop();
-
-    // Final announcement
     speak(
-      `SightViz stopped. Session complete. ${objectsDetected} objects detected in ${finalDuration}.`,
+      `Scanning stopped. ${objectsDetected} objects detected in ${finalDuration}.`,
     );
-    AccessibilityInfo.announceForAccessibility("SightViz stopped.");
+    AccessibilityInfo.announceForAccessibility("SightViz stopped");
   };
 
-  // Spatial Engine Functions
-  const speakSpatial = (text: string) => {
-    Speech.stop();
-    Speech.speak(text, {
-      language: "en",
-      pitch: 1.0,
-      rate: 0.9,
-    });
-
-    const timestamp = new Date().toLocaleTimeString();
-    setLastSpeech(text);
-    setSpeechLog((prev) => [{ time: timestamp, message: text }, ...prev].slice(0, 20));
-    setSpeechCount((prev) => prev + 1);
+  const handlePrimaryToggle = (mode: ScanMode) => {
+    if (appState === "running") {
+      stopSightline();
+      return;
+    }
+    startSightline(mode);
   };
 
-  const startPulseAnimation = () => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.2,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
+  // Load enrolled faces from server on mount
+  useEffect(() => {
+    fetchEnrolledFaces()
+      .then(setServerFaces)
+      .catch((err) => console.warn("[Faces] Could not fetch enrolled faces:", err));
+  }, []);
+
+  const saveFaceProfile = async () => {
+    const cleanName = faceNameDraft.trim();
+    if (cleanName.length === 0 || faceShotsDraft.length < 3) {
+      return;
+    }
+
+    setIsSavingFace(true);
+    try {
+      const result = await enrollFaceProfile(cleanName, faceShotsDraft);
+
+      if (result.success) {
+        // Refresh enrolled faces from server
+        fetchEnrolledFaces().then(setServerFaces).catch(() => {});
+        setFaceNameDraft("");
+        setFaceShotsDraft([]);
+        speak(`${cleanName} saved. ${result.enrolled} face angles enrolled.`);
+      } else {
+        speak("No faces detected in the captured photos. Please try again with clearer images.");
+      }
+    } catch (error) {
+      console.error("Face enroll error:", error);
+      speak("Failed to save face profile. Check your connection and try again.");
+    } finally {
+      setIsSavingFace(false);
+    }
   };
 
-  const stopPulseAnimation = () => {
-    pulseAnim.stopAnimation();
-    pulseAnim.setValue(1);
-  };
+  const captureFaceShot = async () => {
+    if (faceShotsDraft.length >= 4) {
+      speak("Maximum 4 angle shots captured.");
+      return;
+    }
 
-  const captureAndAnalyze = async () => {
-    if (!shouldContinueRef.current || !spatialCameraRef.current) {
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        speak("Camera permission denied. Please enable camera access.");
+        return;
+      }
+    }
+
+    if (!cameraRef.current) {
+      speak("Camera is not ready yet. Please try again.");
       return;
     }
 
     try {
-      setIsProcessing(true);
-      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] Capturing frame...`]);
-
-      // Capture at good quality
-      const photo = await spatialCameraRef.current.takePictureAsync({
-        quality: 0.7,
-        base64: false,
+      const shot = await cameraRef.current.takePictureAsync({
+        quality: 0.65,
         skipProcessing: true,
       });
 
-      if (!photo) {
-        console.log("Failed to capture photo");
-        setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ❌ Failed to capture photo`]);
-        scheduleNextCapture();
+      if (!shot?.uri) {
+        speak("Unable to capture image. Please retry.");
         return;
       }
 
-      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] Resizing image...`]);
-      
-      // Resize to 1024px width to reduce payload size
-      const resized = await ImageManipulator.manipulateAsync(
-        photo.uri,
-        [{ resize: { width: 1024 } }],
-        {
-          compress: 0.7,
-          format: ImageManipulator.SaveFormat.JPEG,
-        }
-      );
-
-      const frame: CameraFrame = {
-        uri: resized.uri,
-        width: resized.width,
-        height: resized.height,
-        timestamp: Date.now(),
-      };
-
-      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 📤 Sending to API...`]);
-      const speechOutput = await analyzeFrameWithSpatialEngine(frame);
-      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ✅ Response received`]);
-
-      if (speechOutput) {
-        console.log(`Speaking: "${speechOutput}"`);
-        setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 🔊 ${speechOutput}`]);
-        speakSpatial(speechOutput);
-        setSpeechCount((prev) => prev + 1);
-      } else {
-        console.log("Silent");
-        setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] 🔇 Silent`]);
-        setSilenceCount((prev) => prev + 1);
-      }
+      setFaceShotsDraft((prev) => [...prev, shot.uri]);
+      setCapturedFrameUri(shot.uri);
+      speak(`Captured angle ${faceShotsDraft.length + 1} of 4.`);
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error("Error processing frame:", error);
-      setDebugInfo(prev => [...prev.slice(-10), `[${new Date().toLocaleTimeString()}] ❌ ${errorMsg}`]);
-      
-      // If we get repeated network errors, speak it once
-      if (errorMsg.includes("Network") && speechCount === 0 && silenceCount === 0) {
-        speakSpatial("Network error. Cannot reach server.");
-      }
-    } finally {
-      setIsProcessing(false);
-      scheduleNextCapture();
+      console.error("Error capturing face shot:", error);
+      speak("Capture failed. Please try again.");
     }
   };
 
-  const scheduleNextCapture = () => {
-    if (shouldContinueRef.current) {
-      captureTimeoutRef.current = setTimeout(() => {
-        captureAndAnalyze();
-      }, 3000);
-    }
-  };
+  const renderHomeContent = () => {
+    const primaryText =
+      appState === "running" && scanMode === "normal"
+        ? "Stop Scanning"
+        : "Start Scanning";
 
-  const handleSpatialToggle = async () => {
-    if (spatialAppState === "idle") {
-      if (!permission?.granted) {
-        const result = await requestPermission();
-        if (!result.granted) {
-          setSpatialAppState("error");
-          speakSpatial("Camera permission denied");
-          return;
-        }
-      }
-      startSpatialSession();
-    } else if (spatialAppState === "running") {
-      stopSpatialSession();
-    }
-  };
-
-  const startSpatialSession = () => {
-    setSpatialAppState("running");
-    setSpatialSessionTime("0:00");
-    setSpeechLog([]);
-    setSilenceCount(0);
-    setSpeechCount(0);
-    setIsProcessing(false);
-    spatialStartTimeRef.current = Date.now();
-    shouldContinueRef.current = true;
-
-    speakSpatial("Spatial guidance active");
-    AccessibilityInfo.announceForAccessibility("Spatial guidance running");
-
-    startPulseAnimation();
-
-    spatialTimerIntervalRef.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - spatialStartTimeRef.current) / 1000);
-      const minutes = Math.floor(elapsed / 60);
-      const seconds = elapsed % 60;
-      setSpatialSessionTime(`${minutes}:${seconds.toString().padStart(2, "0")}`);
-    }, 1000);
-
-    setTimeout(() => {
-      captureAndAnalyze();
-    }, 1000);
-  };
-
-  const stopSpatialSession = () => {
-    shouldContinueRef.current = false;
-    setIsProcessing(false);
-    setSpatialAppState("idle");
-
-    if (captureTimeoutRef.current) {
-      clearTimeout(captureTimeoutRef.current);
-      captureTimeoutRef.current = null;
-    }
-
-    if (spatialTimerIntervalRef.current) {
-      clearInterval(spatialTimerIntervalRef.current);
-      spatialTimerIntervalRef.current = null;
-    }
-
-    stopPulseAnimation();
-
-    speakSpatial("Spatial guidance stopped");
-    setLastSpeech("Session ended");
-  };
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (stopCaptureRef.current) stopCaptureRef.current();
-      if (scanIntervalRef.current) clearTimeout(scanIntervalRef.current);
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      Speech.stop();
-    };
-  }, []);
-
-  // Determine button text and state label
-  const buttonText =
-    appState === "running" ? "Stop Scanning" : "Start Scanning";
-  const stateLabel =
-    appState === "idle" ? "Ready" : appState === "running" ? "Active" : "Error";
-
-  // Accessibility label and hint
-  const accessibilityLabel =
-    appState === "running" ? "Stop SightViz" : "Start SightViz";
-  const accessibilityHint =
-    appState === "running"
-      ? "Double tap to stop spatial detection"
-      : "Double tap to start spatial detection";
-
-  const renderContent = () => {
-    if (activeTab === "scan") {
-      return (
-        <>
-          {/* Header */}
-          <View style={styles.scanHeader}>
-            <View style={styles.scanHeaderIcon}>
-              <MaterialIcons name="qr-code-scanner" size={40} color="#60a5fa" />
-            </View>
-            <Text style={styles.scanTitle}>SightViz</Text>
-            <Text style={styles.scanSubtitle}>Real-time Object Detection</Text>
-            
-            {/* Status Badge */}
-            <View
-              style={[
-                styles.scanStatusBadge,
-                appState === "running" && styles.scanStatusBadgeActive,
-              ]}
-              accessible={true}
-              accessibilityRole="text"
-              accessibilityLabel={`Status: ${stateLabel}`}
-            >
-              <View
-                style={[
-                  styles.scanStatusDot,
-                  appState === "running" && styles.scanStatusDotActive,
-                ]}
-              />
-              <Text style={styles.scanStatusText}>{stateLabel.toUpperCase()}</Text>
-            </View>
-          </View>
-
-          {/* Stats Cards */}
-          <View style={styles.scanStatsWrapper}>
-            <View style={styles.scanStatsContainer}>
-              <View
-                style={styles.scanStatCard}
-                accessible={true}
-                accessibilityRole="text"
-                accessibilityLabel={`Objects detected: ${objectsDetected}`}
-              >
-                <View style={styles.scanStatIconContainer}>
-                  <MaterialIcons name="visibility" size={20} color="#60a5fa" />
-                </View>
-                <Text style={styles.scanStatLabel}>Objects</Text>
-                <Text style={styles.scanStatValue}>{objectsDetected}</Text>
-              </View>
-              
-              <View
-                style={[styles.scanStatCard, styles.scanStatCardHighlight]}
-                accessible={true}
-                accessibilityRole="text"
-                accessibilityLabel={`Session time: ${sessionTime}`}
-              >
-                <View style={[styles.scanStatIconContainer, styles.scanStatIconHighlight]}>
-                  <MaterialIcons name="timer" size={20} color="#10b981" />
-                </View>
-                <Text style={styles.scanStatLabel}>Time</Text>
-                <Text style={[styles.scanStatValue, styles.scanStatValueHighlight]}>{sessionTime}</Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Captured Frame Preview */}
-          {appState === "running" && capturedFrameUri && (
-            <View style={styles.scanFramePreviewCard}>
-              <View style={styles.scanFramePreviewHeader}>
-                <MaterialIcons name="camera-alt" size={18} color="#fbbf24" />
-                <Text style={styles.scanFramePreviewTitle}>Live Frame</Text>
-              </View>
-              <Image
-                source={{ uri: capturedFrameUri }}
-                style={styles.scanFramePreviewImage}
-                resizeMode="cover"
-              />
-            </View>
-          )}
-
-          {/* Speech output display */}
-          {appState === "running" && lastSpokenText && (
-            <View style={styles.scanSpeechCard}>
-              <View style={styles.scanSpeechCardHeader}>
-                <MaterialIcons name="chat-bubble" size={20} color="#60a5fa" />
-                <Text style={styles.scanSpeechCardTitle}>Current Detection</Text>
-              </View>
-              <Text style={styles.scanSpeechCardText}>{lastSpokenText}</Text>
-            </View>
-          )}
-
-          {/* Main action button */}
-          <View style={styles.scanButtonContainer}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.scanControlButton,
-                pressed && styles.scanControlButtonPressed
-              ]}
-              onPress={handleToggle}
-              accessibilityRole="button"
-              accessibilityLabel={accessibilityLabel}
-              accessibilityHint={accessibilityHint}
-              accessibilityState={{ disabled: appState === "error" }}
-              disabled={appState === "error"}
-            >
-              <LinearGradient
-                colors={
-                  appState === "running"
-                    ? ["#065f46", "#059669"]
-                    : appState === "error"
-                    ? ["#991b1b", "#dc2626"]
-                    : ["#1e3a8a", "#1e40af"]
-                }
-                style={styles.scanButtonGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-              >
-                <MaterialIcons 
-                  name={appState === "running" ? "stop" : appState === "error" ? "error" : "play-arrow"} 
-                  size={24} 
-                  color="#fff" 
-                  style={styles.scanButtonIcon}
+    return (
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerRow}>
+          <View style={styles.headerTextWrap}>
+            <View style={styles.brandRow}>
+              <View style={styles.brandLogoWrap}>
+                <View style={styles.brandLogoRing} />
+                <Image
+                  source={headerLogo}
+                  style={styles.brandLogoInner}
+                  resizeMode="contain"
                 />
-                <Text style={styles.scanButtonText}>{buttonText}</Text>
-              </LinearGradient>
+              </View>
+              <Text style={styles.brandTitle}>SIGHTVIZ</Text>
+            </View>
+            <Text style={styles.brandSubtitle}>
+              Real-time detection of nearby objects
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.activeBadge,
+              appState === "running" && styles.activeBadgeRunning,
+            ]}
+          >
+            <View style={styles.activeDot} />
+            <Text style={styles.activeText}>
+              {appState === "running" ? "ACTIVE" : "IDLE"}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.statsRow}>
+          <View style={styles.statCard}>
+            <View style={styles.statCardLabelRow}>
+              <MaterialIcons
+                name="category"
+                size={18}
+                color={colors.textPrimary}
+              />
+              <Text style={styles.statCardLabel}>OBJECTS</Text>
+            </View>
+            <Text style={styles.statCardValue}>{objectsDetected}</Text>
+            <Text style={styles.statCardHint}>objects detected</Text>
+          </View>
+
+          <View style={styles.statCard}>
+            <View style={styles.statCardLabelRow}>
+              <MaterialIcons
+                name="schedule"
+                size={18}
+                color={colors.textPrimary}
+              />
+              <Text style={styles.statCardLabel}>TIME</Text>
+            </View>
+            <Text style={styles.statCardValue}>{sessionTime}</Text>
+            <Text style={styles.statCardHint}>minutes taken</Text>
+          </View>
+        </View>
+
+        <View style={styles.detectionCard}>
+          <View style={styles.detectionHeaderRow}>
+            <Text style={styles.detectionTitle}>Current Detection</Text>
+            <Text style={styles.detectionAge}>{sessionTime}</Text>
+          </View>
+          <Text style={styles.detectionText}>
+            {lastSpokenText ||
+              "No detections yet. Start scanning to hear guidance."}
+          </Text>
+        </View>
+
+        <View style={styles.liveCard}>
+          <View style={styles.liveHeaderRow}>
+            <Text style={styles.liveTitle}>Live Frame</Text>
+            <MaterialIcons
+              name="open-in-full"
+              size={18}
+              color={colors.textMuted}
+            />
+          </View>
+
+          {capturedFrameUri ? (
+            <Image
+              source={{ uri: capturedFrameUri }}
+              style={styles.liveImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.livePlaceholder}>
+              <MaterialIcons name="image" size={26} color={colors.textMuted} />
+              <Text style={styles.livePlaceholderText}>
+                Frame preview appears while scanning
+              </Text>
+            </View>
+          )}
+
+          <Pressable
+            onPress={() => handlePrimaryToggle("normal")}
+            style={({ pressed }) => [
+              styles.primaryButtonWrap,
+              pressed && styles.primaryButtonPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={primaryText}
+          >
+            <LinearGradient
+              colors={
+                appState === "running" && scanMode === "normal"
+                  ? [...gradients.ctaRunning]
+                  : [...gradients.ctaActive]
+              }
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.primaryButton}
+            >
+              <MaterialIcons
+                name={
+                  appState === "running" && scanMode === "normal"
+                    ? "stop"
+                    : "play-arrow"
+                }
+                size={20}
+                color={colors.white}
+              />
+              <Text style={styles.primaryButtonText}>{primaryText}</Text>
+            </LinearGradient>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  };
+
+  const renderHistoryContent = () => {
+    return (
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.historyHeader}>
+          <Text style={styles.historyTitle}>History</Text>
+          <Text style={styles.historySubtitle}>
+            {sessionHistory.length > 0
+              ? `${sessionHistory.length} ${sessionHistory.length === 1 ? "session" : "sessions"}`
+              : "No sessions yet"}
+          </Text>
+        </View>
+
+        {sessionHistory.length === 0 ? (
+          <View style={styles.emptyState}>
+            <MaterialIcons name="history" size={42} color={colors.textMuted} />
+            <Text style={styles.emptyStateTitle}>No session history yet</Text>
+            <Text style={styles.emptyStateText}>
+              Start scanning to create your first log.
+            </Text>
+          </View>
+        ) : (
+          sessionHistory.map((session) => (
+            <View key={session.id} style={styles.historyCard}>
+              <View style={styles.historyCardTop}>
+                <Text style={styles.historyDate}>
+                  {session.timestamp.toLocaleDateString()}{" "}
+                  {session.timestamp.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+                <Text style={styles.historyDuration}>{session.duration}</Text>
+              </View>
+              <View style={styles.historyStatsRow}>
+                <View style={styles.historyStatMini}>
+                  <Text style={styles.historyStatValue}>
+                    {session.objectsDetected}
+                  </Text>
+                  <Text style={styles.historyStatLabel}>objects</Text>
+                </View>
+                <View style={styles.historyStatMini}>
+                  <Text style={styles.historyStatValue}>
+                    {session.detections.length}
+                  </Text>
+                  <Text style={styles.historyStatLabel}>detections</Text>
+                </View>
+              </View>
+            </View>
+          ))
+        )}
+      </ScrollView>
+    );
+  };
+
+  const renderEngineContent = () => {
+    const isEngineRunning = appState === "running" && scanMode === "engine";
+    const primaryText = isEngineRunning
+      ? "Stop Engine Scan"
+      : "Start Engine Scan";
+
+    return (
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.engineHeader}>
+          <Text style={styles.engineTitle}>Spatial Engine</Text>
+          <Text style={styles.engineSubtitle}>
+            Depth-aware scanning mode for richer scene understanding.
+          </Text>
+        </View>
+
+        <View style={styles.engineCard}>
+          <View style={styles.engineRow}>
+            <Text style={styles.engineLabel}>Mode</Text>
+            <Text style={styles.engineValue}>SPATIAL</Text>
+          </View>
+          <View style={styles.engineRow}>
+            <Text style={styles.engineLabel}>Session</Text>
+            <Text style={styles.engineValue}>{sessionTime}</Text>
+          </View>
+          <View style={styles.engineRow}>
+            <Text style={styles.engineLabel}>Objects</Text>
+            <Text style={styles.engineValue}>{objectsDetected}</Text>
+          </View>
+        </View>
+
+        <View style={styles.detectionCard}>
+          <View style={styles.detectionHeaderRow}>
+            <Text style={styles.detectionTitle}>Spatial Detection</Text>
+            <Text style={styles.detectionAge}>{sessionTime}</Text>
+          </View>
+          <Text style={styles.detectionText}>
+            {lastSpokenText ||
+              "No spatial detections yet. Start engine scan to begin."}
+          </Text>
+        </View>
+
+        <View style={styles.liveCard}>
+          <View style={styles.liveHeaderRow}>
+            <Text style={styles.liveTitle}>Engine Live Feed</Text>
+            <MaterialIcons
+              name="open-in-full"
+              size={18}
+              color={colors.textMuted}
+            />
+          </View>
+
+          {capturedFrameUri ? (
+            <Image
+              source={{ uri: capturedFrameUri }}
+              style={styles.liveImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.livePlaceholder}>
+              <MaterialIcons name="image" size={26} color={colors.textMuted} />
+              <Text style={styles.livePlaceholderText}>
+                Live preview appears while engine scanning
+              </Text>
+            </View>
+          )}
+        </View>
+
+        <Pressable
+          onPress={() => handlePrimaryToggle("engine")}
+          style={({ pressed }) => [
+            styles.primaryButtonWrap,
+            pressed && styles.primaryButtonPressed,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={primaryText}
+        >
+          <LinearGradient
+            colors={
+              isEngineRunning
+                ? [...gradients.ctaRunning]
+                : [...gradients.ctaActive]
+            }
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.primaryButton}
+          >
+            <MaterialIcons
+              name={isEngineRunning ? "stop" : "radar"}
+              size={20}
+              color={colors.white}
+            />
+            <Text style={styles.primaryButtonText}>{primaryText}</Text>
+          </LinearGradient>
+        </Pressable>
+      </ScrollView>
+    );
+  };
+
+  const renderSaveFacesContent = () => {
+    const canSave =
+      faceNameDraft.trim().length > 0 && faceShotsDraft.length >= 3;
+
+    return (
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.engineHeader}>
+          <Text style={styles.engineTitle}>Save Faces</Text>
+          <Text style={styles.engineSubtitle}>
+            Capture 3-4 angles and save a person with a name for recognition.
+          </Text>
+        </View>
+
+        <View style={styles.faceCard}>
+          <Text style={styles.faceLabel}>Person Name</Text>
+          <TextInput
+            value={faceNameDraft}
+            onChangeText={setFaceNameDraft}
+            placeholder="Enter name"
+            placeholderTextColor={colors.textMuted}
+            style={styles.faceInput}
+          />
+
+          <View style={styles.faceCaptureRow}>
+            <Pressable
+              style={styles.faceCaptureButton}
+              onPress={captureFaceShot}
+            >
+              <MaterialIcons
+                name="photo-camera"
+                size={16}
+                color={colors.white}
+              />
+              <Text style={styles.faceCaptureText}>Add Angle Shot</Text>
+            </Pressable>
+            <Pressable
+              style={styles.faceResetButton}
+              onPress={() => setFaceShotsDraft([])}
+            >
+              <Text style={styles.faceResetText}>Reset</Text>
             </Pressable>
           </View>
 
-          {/* Error message */}
-          {appState === "error" && (
-            <View
-              style={styles.scanErrorContainer}
-              accessible={true}
-              accessibilityRole="alert"
-            >
-              <MaterialIcons name="error-outline" size={24} color="#f87171" />
-              <Text style={styles.scanErrorText}>
-                Unable to start. Check camera permissions.
-              </Text>
-            </View>
-          )}
+          <Text style={styles.faceProgressText}>
+            Captured shots: {faceShotsDraft.length}/4 (minimum 3 required)
+          </Text>
 
-          {/* Debug Info Panel */}
-          {scanDebugInfo.length > 0 && (
-            <View style={styles.spatialLogCard}>
-              <View style={styles.spatialLogHeader}>
-                <MaterialIcons name="bug-report" size={18} color="#f59e0b" />
-                <Text style={styles.spatialLogTitle}>Debug Info</Text>
-              </View>
-              <ScrollView 
-                style={styles.spatialLogScroll}
-                showsVerticalScrollIndicator={false}
-              >
-                {scanDebugInfo.map((info, index) => (
-                  <Text key={index} style={[styles.spatialLogMessage, { fontSize: 11, color: '#64748b' }]}>
-                    {info}
-                  </Text>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-        </>
-      );
-    } else if (activeTab === "history") {
-      return (
-        <>
-          <View style={styles.historyHeader}>
-            <View style={styles.historyHeaderIcon}>
-              <MaterialIcons name="history" size={40} color="#60a5fa" />
-            </View>
-            <Text style={styles.historyTitle}>Session History</Text>
-            <Text style={styles.historySubtitle}>
-              {sessionHistory.length > 0 
-                ? `${sessionHistory.length} ${sessionHistory.length === 1 ? 'session' : 'sessions'} recorded`
-                : "No sessions yet"}
-            </Text>
-          </View>
-
-          {sessionHistory.length === 0 ? (
-            <View style={styles.historyEmptyState}>
-              <MaterialIcons name="history" size={80} color="#334155" />
-              <Text style={styles.historyEmptyText}>No session history yet</Text>
-              <Text style={styles.historyEmptySubtext}>
-                Start scanning to track your activity
-              </Text>
-            </View>
-          ) : (
-            <ScrollView 
-              style={styles.historyScrollView}
-              showsVerticalScrollIndicator={false}
+          {faceShotsDraft.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.faceShotsRow}
             >
-              {sessionHistory.map((session) => (
-                <View key={session.id} style={styles.historySessionCard}>
-                  <View style={styles.historySessionHeader}>
-                    <View style={styles.historySessionDateContainer}>
-                      <MaterialIcons name="calendar-today" size={16} color="#94a3b8" />
-                      <Text style={styles.historySessionDate}>
-                        {session.timestamp.toLocaleDateString()}{" "}
-                        {session.timestamp.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </Text>
-                    </View>
-                    <View style={styles.historyDurationBadge}>
-                      <MaterialIcons name="schedule" size={14} color="#10b981" />
-                      <Text style={styles.historySessionDuration}>
-                        {session.duration}
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.historySessionStats}>
-                    <View style={styles.historySessionStat}>
-                      <View style={styles.historyStatIconContainer}>
-                        <MaterialIcons name="visibility" size={18} color="#60a5fa" />
-                      </View>
-                      <Text style={styles.historySessionStatValue}>
-                        {session.objectsDetected}
-                      </Text>
-                      <Text style={styles.historySessionStatLabel}>Objects</Text>
-                    </View>
-                    <View style={styles.historySessionStat}>
-                      <View style={styles.historyStatIconContainer}>
-                        <MaterialIcons name="campaign" size={18} color="#a78bfa" />
-                      </View>
-                      <Text style={styles.historySessionStatValue}>
-                        {session.detections.length}
-                      </Text>
-                      <Text style={styles.historySessionStatLabel}>Detections</Text>
-                    </View>
-                  </View>
-                </View>
+              {faceShotsDraft.map((uri, index) => (
+                <Image
+                  key={`${uri}-${index}`}
+                  source={{ uri }}
+                  style={styles.faceShotThumb}
+                />
               ))}
             </ScrollView>
           )}
-        </>
-      );
-    } else if (activeTab === "more") {
-      // If a more option is selected, render that page
-      if (moreSelection === "settings") {
-        return (
-          <>
-            <View style={styles.settingsHeader}>
-              <Pressable 
-                onPress={() => setMoreSelection(null)}
-                style={styles.backButton}
-              >
-                <MaterialIcons name="arrow-back" size={24} color="#60a5fa" />
-                <Text style={styles.backButtonText}>Back to More</Text>
-              </Pressable>
-              <View style={styles.settingsHeaderIcon}>
-                <MaterialIcons name="settings" size={40} color="#60a5fa" />
-              </View>
-              <Text style={styles.settingsTitle}>Settings</Text>
-              <Text style={styles.settingsSubtitle}>Application Configuration</Text>
-            </View>
 
-            <View style={styles.settingsContent}>
-              <Pressable style={styles.settingItemCard} onPress={toggleTheme}>
-                <View style={styles.settingItemLeft}>
-                  <View style={styles.settingIconContainer}>
-                    <MaterialIcons name="brightness-6" size={22} color="#f59e0b" />
-                  </View>
-                  <View>
-                    <Text style={styles.settingItemLabel}>Theme</Text>
-                    <Text style={styles.settingItemDescription}>App appearance</Text>
-                  </View>
-                </View>
-                <View style={styles.settingValueBadge}>
-                  <Text style={styles.settingItemValue}>{theme === "dark" ? "Dark" : "Light"}</Text>
-                </View>
-              </Pressable>
-              
-              <View style={styles.settingItemCard}>
-                <View style={styles.settingItemLeft}>
-                  <View style={styles.settingIconContainer}>
-                    <MaterialIcons name="record-voice-over" size={22} color="#60a5fa" />
-                  </View>
-                  <View>
-                    <Text style={styles.settingItemLabel}>Voice Feedback</Text>
-                    <Text style={styles.settingItemDescription}>Audio announcements</Text>
-                  </View>
-                </View>
-                <View style={styles.settingValueBadge}>
-                  <Text style={styles.settingItemValue}>Enabled</Text>
-                </View>
-              </View>
-              
-              <View style={styles.settingItemCard}>
-                <View style={styles.settingItemLeft}>
-                  <View style={styles.settingIconContainer}>
-                    <MaterialIcons name="tune" size={22} color="#a78bfa" />
-                  </View>
-                  <View>
-                    <Text style={styles.settingItemLabel}>Detection Sensitivity</Text>
-                    <Text style={styles.settingItemDescription}>Object detection threshold</Text>
-                  </View>
-                </View>
-                <View style={styles.settingValueBadge}>
-                  <Text style={styles.settingItemValue}>High</Text>
-                </View>
-              </View>
-              
-              <View style={styles.settingItemCard}>
-                <View style={styles.settingItemLeft}>
-                  <View style={styles.settingIconContainer}>
-                    <MaterialIcons name="vibration" size={22} color="#10b981" />
-                  </View>
-                  <View>
-                    <Text style={styles.settingItemLabel}>Haptic Feedback</Text>
-                    <Text style={styles.settingItemDescription}>Tactile responses</Text>
-                  </View>
-                </View>
-                <View style={styles.settingValueBadge}>
-                  <Text style={styles.settingItemValue}>Enabled</Text>
-                </View>
-              </View>
-            </View>
-          </>
-        );
-      } else {
-        // Show More menu
-        return (
-          <>
-            <View style={styles.moreHeader}>
-              <View style={styles.moreHeaderIcon}>
-                <MaterialIcons name="apps" size={40} color="#60a5fa" />
-              </View>
-              <Text style={styles.moreTitle}>More Options</Text>
-              <Text style={styles.moreSubtitle}>Advanced Features & Settings</Text>
-            </View>
-
-            <View style={styles.moreContent}>
-              <Pressable 
-                style={({ pressed }) => [
-                  styles.moreOptionCard,
-                  pressed && styles.moreOptionCardPressed
-                ]}
-                onPress={() => setMoreSelection("settings")}
-              >
-                <View style={[styles.moreOptionIconContainer, { backgroundColor: "rgba(96, 165, 250, 0.15)" }]}>
-                  <MaterialIcons name="settings" size={32} color="#60a5fa" />
-                </View>
-                <View style={styles.moreOptionContent}>
-                  <Text style={styles.moreOptionTitle}>Settings</Text>
-                  <Text style={styles.moreOptionDescription}>Configure app preferences</Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={24} color="#64748b" />
-              </Pressable>
-            </View>
-          </>
-        );
-      }
-    } else if (activeTab === "engine") {
-      const stateColors: Record<AppState, [string, string]> = {
-        idle: ["#1e3a8a", "#1e40af"],
-        running: ["#065f46", "#059669"],
-        error: ["#991b1b", "#dc2626"],
-      };
-
-      const stateText = {
-        idle: "Start Guidance",
-        running: "Stop Guidance",
-        error: "Error",
-      };
-
-      const stateIcon = {
-        idle: "play-arrow",
-        running: "stop",
-        error: "error",
-      };
-
-      return (
-        <>
-          {/* Header */}
-          <View style={styles.spatialHeader}>
-            <View style={styles.spatialHeaderIcon}>
-              <MaterialIcons name="explore" size={40} color="#60a5fa" />
-            </View>
-            <Text style={styles.spatialTitle}>SightViz Engine</Text>
-            <Text style={styles.spatialSubtitle}>Real-time Spatial Guidance</Text>
-            
-            {/* Status Badge */}
-            <View style={[
-              styles.spatialStatusBadge,
-              spatialAppState === "running" && styles.spatialStatusBadgeActive
-            ]}>
-              <View style={[
-                styles.spatialStatusDot,
-                spatialAppState === "running" && styles.spatialStatusDotActive
-              ]} />
-              <Text style={styles.spatialStatusText}>
-                {spatialAppState === "running" ? "ACTIVE" : "IDLE"}
-              </Text>
-            </View>
-          </View>
-
-          {/* Camera View with Enhanced Border */}
-          <View style={styles.spatialCameraWrapper}>
-            <View style={styles.spatialCameraContainer}>
-              <CameraView
-                ref={spatialCameraRef}
-                style={styles.spatialCamera}
-                facing="back"
-              />
-              <View style={styles.spatialOverlay}>
-                {isProcessing && (
-                  <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                    <MaterialIcons name="visibility" size={48} color="rgba(255,255,255,0.8)" />
-                  </Animated.View>
-                )}
-                <Text style={styles.spatialOverlayText}>
-                  {isProcessing ? "ANALYZING..." : spatialAppState === "running" ? "SCANNING" : "READY"}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Stats Cards */}
-          <View style={styles.spatialStatsWrapper}>
-            <View style={styles.spatialStatsContainer}>
-              <View style={styles.spatialStatCard}>
-                <View style={styles.spatialStatIconContainer}>
-                  <MaterialIcons name="timer" size={20} color="#60a5fa" />
-                </View>
-                <Text style={styles.spatialStatLabel}>Session</Text>
-                <Text style={styles.spatialStatValue}>{spatialSessionTime}</Text>
-              </View>
-              
-              <View style={[styles.spatialStatCard, styles.spatialStatCardHighlight]}>
-                <View style={[styles.spatialStatIconContainer, styles.spatialStatIconHighlight]}>
-                  <MaterialIcons name="record-voice-over" size={20} color="#10b981" />
-                </View>
-                <Text style={styles.spatialStatLabel}>Speech</Text>
-                <Text style={[styles.spatialStatValue, styles.spatialStatValueHighlight]}>{speechCount}</Text>
-              </View>
-              
-              <View style={styles.spatialStatCard}>
-                <View style={styles.spatialStatIconContainer}>
-                  <MaterialIcons name="volume-off" size={20} color="#94a3b8" />
-                </View>
-                <Text style={styles.spatialStatLabel}>Silent</Text>
-                <Text style={styles.spatialStatValue}>{silenceCount}</Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Last Speech Card */}
-          <View style={styles.spatialSpeechCard}>
-            <View style={styles.spatialSpeechCardHeader}>
-              <MaterialIcons name="chat-bubble" size={20} color="#60a5fa" />
-              <Text style={styles.spatialSpeechCardTitle}>Latest Guidance</Text>
-            </View>
-            <Text style={styles.spatialSpeechCardText}>
-              {lastSpeech || "Waiting for first detection..."}
-            </Text>
-          </View>
-
-          {/* Control Button */}
           <Pressable
-            onPress={handleSpatialToggle}
+            onPress={saveFaceProfile}
+            disabled={!canSave || isSavingFace}
             style={({ pressed }) => [
-              styles.spatialControlButton,
-              pressed && styles.spatialControlButtonPressed
+              styles.faceSaveButton,
+              (!canSave || isSavingFace) && styles.faceSaveButtonDisabled,
+              pressed && canSave && !isSavingFace && styles.primaryButtonPressed,
             ]}
           >
-            <LinearGradient
-              colors={stateColors[spatialAppState]}
-              style={styles.spatialButtonGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <MaterialIcons 
-                name={stateIcon[spatialAppState] as any} 
-                size={24} 
-                color="#fff" 
-                style={styles.spatialButtonIcon}
-              />
-              <Text style={styles.spatialButtonText}>{stateText[spatialAppState]}</Text>
-            </LinearGradient>
+            <Text style={styles.faceSaveText}>
+              {isSavingFace ? "Saving…" : "Save Face Profile"}
+            </Text>
           </Pressable>
+        </View>
 
-          {/* Debug Info Panel */}
-          <View style={styles.spatialLogCard}>
-            <View style={styles.spatialLogHeader}>
-              <MaterialIcons name="bug-report" size={18} color="#f59e0b" />
-              <Text style={styles.spatialLogTitle}>Debug Info</Text>
-            </View>
-            <ScrollView 
-              style={styles.spatialLogScroll}
-              showsVerticalScrollIndicator={false}
-            >
-              {debugInfo.length === 0 ? (
-                <Text style={styles.spatialLogEmpty}>Waiting for activity...</Text>
-              ) : (
-                debugInfo.map((info, index) => (
-                  <Text key={index} style={[styles.spatialLogMessage, { fontSize: 11, color: '#64748b' }]}>
-                    {info}
-                  </Text>
-                ))
-              )}
-            </ScrollView>
-          </View>
-
-          {/* Speech Log */}
-          <View style={styles.spatialLogCard}>
-            <View style={styles.spatialLogHeader}>
-              <MaterialIcons name="history" size={18} color="#94a3b8" />
-              <Text style={styles.spatialLogTitle}>Recent Activity</Text>
-              {speechLog.length > 0 && (
-                <View style={styles.spatialLogBadge}>
-                  <Text style={styles.spatialLogBadgeText}>{speechLog.length}</Text>
-                </View>
-              )}
-            </View>
-            <ScrollView 
-              style={styles.spatialLogScroll}
-              showsVerticalScrollIndicator={false}
-            >
-              {speechLog.length === 0 ? (
-                <View style={styles.spatialLogEmptyContainer}>
-                  <MaterialIcons name="speaker-notes-off" size={48} color="#334155" />
-                  <Text style={styles.spatialLogEmpty}>No activity yet</Text>
-                  <Text style={styles.spatialLogEmptySubtext}>
-                    Start scanning to see guidance history
+        <View style={styles.faceCard}>
+          <Text style={styles.faceLabel}>Saved Profiles</Text>
+          {serverFaces.length === 0 ? (
+            <Text style={styles.faceProgressText}>
+              No saved faces yet. Add a profile to enable name-based
+              recognition.
+            </Text>
+          ) : (
+            serverFaces.map((profile) => (
+              <View key={profile.name} style={styles.savedFaceRow}>
+                <View>
+                  <Text style={styles.savedFaceName}>{profile.name}</Text>
+                  <Text style={styles.savedFaceMeta}>
+                    {profile.photoCount} angles enrolled
                   </Text>
                 </View>
-              ) : (
-                speechLog.map((entry, index) => (
-                  <View key={index} style={styles.spatialLogEntry}>
-                    <View style={styles.spatialLogEntryHeader}>
-                      <MaterialIcons name="campaign" size={14} color="#10b981" />
-                      <Text style={styles.spatialLogTime}>{entry.time}</Text>
-                    </View>
-                    <Text style={styles.spatialLogMessage}>{entry.message}</Text>
-                  </View>
-                ))
-              )}
-            </ScrollView>
+                <MaterialIcons
+                  name="verified"
+                  size={18}
+                  color={colors.success}
+                />
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+    );
+  };
+
+  const renderMoreMenu = () => {
+    return (
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.engineHeader}>
+          <Text style={styles.engineTitle}>More</Text>
+          <Text style={styles.engineSubtitle}>
+            Settings, history, app info, and future pages live here.
+          </Text>
+        </View>
+
+        <Pressable
+          style={styles.moreRow}
+          onPress={() => setMoreSection("settings")}
+        >
+          <View style={styles.moreRowLeft}>
+            <MaterialIcons
+              name="settings"
+              size={18}
+              color={colors.textPrimary}
+            />
+            <Text style={styles.moreRowText}>Settings</Text>
           </View>
-        </>
+          <MaterialIcons
+            name="chevron-right"
+            size={20}
+            color={colors.textMuted}
+          />
+        </Pressable>
+
+        <Pressable
+          style={styles.moreRow}
+          onPress={() => setMoreSection("history")}
+        >
+          <View style={styles.moreRowLeft}>
+            <MaterialIcons
+              name="history"
+              size={18}
+              color={colors.textPrimary}
+            />
+            <Text style={styles.moreRowText}>History</Text>
+          </View>
+          <MaterialIcons
+            name="chevron-right"
+            size={20}
+            color={colors.textMuted}
+          />
+        </Pressable>
+
+        <Pressable
+          style={styles.moreRow}
+          onPress={() => setMoreSection("about")}
+        >
+          <View style={styles.moreRowLeft}>
+            <MaterialIcons
+              name="info-outline"
+              size={18}
+              color={colors.textPrimary}
+            />
+            <Text style={styles.moreRowText}>About & Version</Text>
+          </View>
+          <MaterialIcons
+            name="chevron-right"
+            size={20}
+            color={colors.textMuted}
+          />
+        </Pressable>
+
+        <View style={styles.moreFutureCard}>
+          <Text style={styles.moreFutureTitle}>Future Pages</Text>
+          <Text style={styles.moreFutureText}>
+            New pages will be added under More to keep the bottom bar focused.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  };
+
+  const renderMoreSubHeader = (title: string) => (
+    <View style={styles.moreSubHeader}>
+      <Pressable
+        onPress={() => setMoreSection("menu")}
+        style={styles.moreBackBtn}
+      >
+        <MaterialIcons name="arrow-back" size={18} color={colors.textPrimary} />
+      </Pressable>
+      <Text style={styles.moreSubTitle}>{title}</Text>
+      <View style={styles.moreBackBtnSpacer} />
+    </View>
+  );
+
+  const renderMoreContent = () => {
+    if (moreSection === "menu") {
+      return renderMoreMenu();
+    }
+
+    if (moreSection === "settings") {
+      return (
+        <View style={styles.contentArea}>
+          {renderMoreSubHeader("Settings")}
+          <SettingsPanel
+            language={speechLanguage}
+            onChangeLanguage={setSpeechLanguage}
+            audioLevel={audioLevel}
+            onChangeAudioLevel={handleAudioLevelChange}
+            muted={isMuted}
+            onToggleMuted={handleMutedChange}
+          />
+        </View>
       );
     }
+
+    if (moreSection === "history") {
+      return (
+        <View style={styles.contentArea}>
+          {renderMoreSubHeader("History")}
+          {renderHistoryContent()}
+        </View>
+      );
+    }
+
+    return (
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderMoreSubHeader("About & Version")}
+        <View style={styles.moreFutureCard}>
+          <Text style={styles.moreFutureTitle}>SightViz</Text>
+          <Text style={styles.moreFutureText}>Version 1.0.0</Text>
+          <Text style={styles.moreFutureText}>
+            AI-powered accessibility assistant for object and scene awareness.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  };
+
+  const renderContent = () => {
+    if (activeTab === "home") return renderHomeContent();
+    if (activeTab === "engine") return renderEngineContent();
+    if (activeTab === "saveFaces") return renderSaveFacesContent();
+    return renderMoreContent();
   };
 
   return (
-    <View style={styles.container}>
-      {/* Camera View (behind everything) */}
-      <CameraComponent ref={cameraRef} isActive={appState === "running"} />
+    <View style={styles.root}>
+      <CameraComponent
+        ref={cameraRef}
+        isActive={appState === "running" || activeTab === "saveFaces"}
+      />
 
       <LinearGradient
-        colors={colors.background as any}
+        colors={gradients.screen as any}
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.85, y: 1 }}
         style={styles.gradient}
       >
-        <SafeAreaView style={styles.safeArea}>
-          <ScrollView
-            style={styles.scrollView}
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {renderContent()}
-          </ScrollView>
+        <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+          <View style={styles.contentArea}>{renderContent()}</View>
 
-          {/* Bottom Tab Bar */}
-          <View style={styles.tabBar}>
-            {/* Tab 1: Scan */}
+          <View style={styles.bottomBar}>
             <Pressable
               style={styles.tabItem}
-              onPress={() => setActiveTab("scan")}
-              accessibilityRole="tab"
-              accessibilityLabel="Scan tab"
-              accessibilityState={{ selected: activeTab === "scan" }}
+              onPress={() => setActiveTab("home")}
             >
               <View
                 style={[
-                  styles.tabIconContainer,
-                  activeTab === "scan" && styles.tabIconContainerActive,
+                  styles.tabIconBg,
+                  activeTab === "home" && styles.tabIconBgActive,
                 ]}
               >
                 <MaterialIcons
-                  name="qr-code-scanner"
-                  size={24}
-                  color={activeTab === "scan" ? "#60a5fa" : "#94A3B8"}
+                  name="home"
+                  size={22}
+                  color={
+                    activeTab === "home" ? colors.textPrimary : colors.textMuted
+                  }
                 />
               </View>
               <Text
                 style={[
                   styles.tabLabel,
-                  activeTab === "scan" && styles.tabLabelActive,
+                  activeTab === "home" && styles.tabLabelActive,
                 ]}
               >
-                Scan
+                Home
               </Text>
             </Pressable>
 
-            {/* Tab 2: Engine */}
             <Pressable
               style={styles.tabItem}
               onPress={() => setActiveTab("engine")}
-              accessibilityRole="tab"
-              accessibilityLabel="Spatial Engine tab"
-              accessibilityState={{ selected: activeTab === "engine" }}
             >
               <View
                 style={[
-                  styles.tabIconContainer,
-                  activeTab === "engine" && styles.tabIconContainerActive,
+                  styles.tabIconBg,
+                  activeTab === "engine" && styles.tabIconBgActive,
                 ]}
               >
                 <MaterialIcons
-                  name="explore"
-                  size={24}
-                  color={activeTab === "engine" ? "#60a5fa" : "#94A3B8"}
+                  name="radar"
+                  size={22}
+                  color={
+                    activeTab === "engine"
+                      ? colors.textPrimary
+                      : colors.textMuted
+                  }
                 />
               </View>
               <Text
@@ -1155,57 +979,55 @@ export default function SightlineApp() {
               </Text>
             </Pressable>
 
-            {/* Tab 3: History */}
             <Pressable
               style={styles.tabItem}
-              onPress={() => setActiveTab("history")}
-              accessibilityRole="tab"
-              accessibilityLabel="History tab"
-              accessibilityState={{ selected: activeTab === "history" }}
+              onPress={() => setActiveTab("saveFaces")}
             >
               <View
                 style={[
-                  styles.tabIconContainer,
-                  activeTab === "history" && styles.tabIconContainerActive,
+                  styles.tabIconBg,
+                  activeTab === "saveFaces" && styles.tabIconBgActive,
                 ]}
               >
                 <MaterialIcons
-                  name="history"
-                  size={24}
-                  color={activeTab === "history" ? "#60a5fa" : "#94A3B8"}
+                  name="face-retouching-natural"
+                  size={22}
+                  color={
+                    activeTab === "saveFaces"
+                      ? colors.textPrimary
+                      : colors.textMuted
+                  }
                 />
               </View>
               <Text
                 style={[
                   styles.tabLabel,
-                  activeTab === "history" && styles.tabLabelActive,
+                  activeTab === "saveFaces" && styles.tabLabelActive,
                 ]}
               >
-                History
+                Save Faces
               </Text>
             </Pressable>
 
-            {/* Tab 4: More */}
             <Pressable
               style={styles.tabItem}
               onPress={() => {
                 setActiveTab("more");
-                setMoreSelection(null);
+                setMoreSection("menu");
               }}
-              accessibilityRole="tab"
-              accessibilityLabel="More options tab"
-              accessibilityState={{ selected: activeTab === "more" }}
             >
               <View
                 style={[
-                  styles.tabIconContainer,
-                  activeTab === "more" && styles.tabIconContainerActive,
+                  styles.tabIconBg,
+                  activeTab === "more" && styles.tabIconBgActive,
                 ]}
               >
                 <MaterialIcons
-                  name="apps"
-                  size={24}
-                  color={activeTab === "more" ? "#60a5fa" : "#94A3B8"}
+                  name="menu"
+                  size={22}
+                  color={
+                    activeTab === "more" ? colors.textPrimary : colors.textMuted
+                  }
                 />
               </View>
               <Text
@@ -1224,1212 +1046,580 @@ export default function SightlineApp() {
   );
 }
 
-const createStyles = (colors: typeof themes.light) => StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background[0],
-  },
-
-  gradient: {
-    flex: 1,
-  },
-
-  safeArea: {
-    flex: 1,
-  },
-
-  scrollView: {
-    flex: 1,
-  },
-
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 20,
-  },
-
-  // Scan Tab Styles
-  scanHeader: {
-    alignItems: "center",
-    marginBottom: 24,
-    paddingTop: 8,
-    paddingHorizontal: 16,
-  },
-  scanHeaderIcon: {
-    marginBottom: 12,
-    backgroundColor: colors.primaryLight,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: colors.cardBorder,
-  },
-  scanTitle: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: colors.text,
-    marginBottom: 6,
-    letterSpacing: 0.5,
-  },
-  scanSubtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontWeight: "500",
-    letterSpacing: 0.3,
-  },
-  scanStatusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.statusBadge,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  scanStatusBadgeActive: {
-    backgroundColor: colors.statusBadgeActive,
-    borderColor: colors.successLight,
-  },
-  scanStatusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.textTertiary,
-    marginRight: 8,
-  },
-  scanStatusDotActive: {
-    backgroundColor: colors.success,
-  },
-  scanStatusText: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-  },
-  scanStatsWrapper: {
-    marginBottom: 16,
-    paddingHorizontal: 16,
-  },
-  scanStatsContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  scanStatCard: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 14,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  scanStatCardHighlight: {
-    backgroundColor: colors.successLight,
-    borderColor: colors.success,
-  },
-  scanStatIconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.primaryLight,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  scanStatIconHighlight: {
-    backgroundColor: colors.successLight,
-  },
-  scanStatLabel: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    fontWeight: "600",
-    marginBottom: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  scanStatValue: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  scanStatValueHighlight: {
-    color: colors.success,
-  },
-  scanFramePreviewCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 16,
-    marginHorizontal: 16,
-    borderWidth: 1,
-    borderColor: colors.warningLight,
-  },
-  scanFramePreviewHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
-    gap: 8,
-  },
-  scanFramePreviewTitle: {
-    fontSize: 12,
-    color: colors.warning,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  scanFramePreviewImage: {
-    width: "100%",
-    height: 150,
-    borderRadius: 12,
-    backgroundColor: "#000",
-  },
-  scanSpeechCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    marginHorizontal: 16,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  scanSpeechCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-    gap: 8,
-  },
-  scanSpeechCardTitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  scanSpeechCardText: {
-    fontSize: 17,
-    color: colors.textSecondary,
-    fontWeight: "600",
-    lineHeight: 24,
-  },
-  scanButtonContainer: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 16,
-    marginBottom: 16,
-  },
-  scanControlButton: {
-    width: "100%",
-    borderRadius: 16,
-    overflow: "hidden",
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  scanControlButtonPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.98 }],
-  },
-  scanButtonGradient: {
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  scanButtonIcon: {
-    marginRight: 4,
-  },
-  scanButtonText: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-  },
-  scanErrorContainer: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    backgroundColor: colors.errorLight,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.error,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  scanErrorText: {
-    fontSize: 15,
-    color: colors.error,
-    fontWeight: "600",
-    flex: 1,
-  },
-
-  // History Tab Styles
-  historyHeader: {
-    alignItems: "center",
-    marginBottom: 24,
-    paddingTop: 8,
-    paddingHorizontal: 16,
-  },
-  historyHeaderIcon: {
-    marginBottom: 12,
-    backgroundColor: colors.primaryLight,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: colors.cardBorder,
-  },
-  historyTitle: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: colors.text,
-    marginBottom: 6,
-    letterSpacing: 0.5,
-  },
-  historySubtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontWeight: "500",
-    letterSpacing: 0.3,
-  },
-  historyEmptyState: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingVertical: 80,
-  },
-  historyEmptyText: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: colors.textTertiary,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  historyEmptySubtext: {
-    fontSize: 14,
-    color: colors.textTertiary,
-    textAlign: "center",
-  },
-  historyScrollView: {
-    flex: 1,
-    paddingHorizontal: 16,
-  },
-  historySessionCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  historySessionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(71, 85, 105, 0.3)",
-  },
-  historySessionDateContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  historySessionDate: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: colors.textSecondary,
-  },
-  historyDurationBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(16, 185, 129, 0.15)",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 6,
-  },
-  historySessionDuration: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#10b981",
-  },
-  historySessionStats: {
-    flexDirection: "row",
-    gap: 16,
-  },
-  historySessionStat: {
-    flex: 1,
-    alignItems: "center",
-    backgroundColor: "rgba(15, 23, 42, 0.5)",
-    padding: 14,
-    borderRadius: 12,
-    gap: 8,
-  },
-  historyStatIconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(96, 165, 250, 0.15)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  historySessionStatValue: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  historySessionStatLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: colors.textTertiary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  // Settings Tab Styles
-  settingsHeader: {
-    alignItems: "center",
-    marginBottom: 24,
-    paddingTop: 8,
-    paddingHorizontal: 16,
-  },
-  settingsHeaderIcon: {
-    marginBottom: 12,
-    backgroundColor: colors.primaryLight,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: colors.cardBorder,
-  },
-  settingsTitle: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: colors.text,
-    marginBottom: 6,
-    letterSpacing: 0.5,
-  },
-  settingsSubtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontWeight: "500",
-    letterSpacing: 0.3,
-  },
-  settingsContent: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  settingItemCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 18,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  settingItemLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    flex: 1,
-  },
-  settingIconContainer: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.primaryLight,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  settingItemLabel: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.textSecondary,
-    marginBottom: 3,
-  },
-  settingItemDescription: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: colors.textTertiary,
-  },
-  settingValueBadge: {
-    backgroundColor: colors.primaryLight,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 12,
-  },
-  settingItemValue: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: colors.primary,
-  },
-
-  // More Tab Styles
-  moreHeader: {
-    alignItems: "center",
-    marginBottom: 24,
-    paddingTop: 8,
-    paddingHorizontal: 16,
-  },
-  moreHeaderIcon: {
-    marginBottom: 12,
-    backgroundColor: colors.primaryLight,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: colors.cardBorder,
-  },
-  moreTitle: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: colors.text,
-    marginBottom: 6,
-    letterSpacing: 0.5,
-  },
-  moreSubtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontWeight: "500",
-    letterSpacing: 0.3,
-  },
-  moreContent: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  moreOptionCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    gap: 14,
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  moreOptionCardPressed: {
-    opacity: 0.7,
-    transform: [{ scale: 0.97 }],
-  },
-  moreOptionIconContainer: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  moreOptionContent: {
-    flex: 1,
-  },
-  moreOptionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: colors.textSecondary,
-    marginBottom: 4,
-  },
-  moreOptionDescription: {
-    fontSize: 13,
-    fontWeight: "500",
-    color: colors.textTertiary,
-  },
-  backButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: 8,
-    marginBottom: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: colors.primaryLight,
-    borderRadius: 12,
-  },
-  backButtonText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: colors.primary,
-  },
-
-  // Header (old - to be removed)
-  header: {
-    paddingHorizontal: 24,
-    paddingTop: 20,
-    paddingBottom: 16,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-
-  appTitle: {
-    fontSize: 32,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-    letterSpacing: -0.5,
-  },
-
-  statusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.statusBadge,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    gap: 6,
-  },
-
-  statusBadgeActive: {
-    backgroundColor: colors.statusBadgeActive,
-  },
-
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.statusDot,
-  },
-
-  statusDotActive: {
-    backgroundColor: colors.statusDotActive,
-  },
-
-  statusText: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textSecondary,
-  },
-
-  // Stats Cards
-  statsContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 24,
-    gap: 12,
-    marginBottom: 32,
-  },
-
-  statCard: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-
-  statValue: {
-    fontSize: 36,
-    fontFamily: "Inter_800ExtraBold",
-    color: colors.text,
-    marginBottom: 4,
-  },
-
-  statLabel: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    color: colors.textSecondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  // Main Button
-  buttonContainer: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-    flex: 1,
-  },
-
-  button: {
-    width: Math.min(width - 48, 320),
-    height: Math.min(width - 48, 320),
-    borderRadius: 160,
-    overflow: "hidden",
-    elevation: 10,
-    shadowColor: "#10335D",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-  },
-
-  buttonRunning: {
-    shadowColor: "#10B981",
-  },
-
-  buttonError: {
-    opacity: 0.5,
-  },
-
-  buttonPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.96 }],
-  },
-
-  buttonGradient: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  buttonText: {
-    fontSize: 28,
-    fontFamily: "Inter_800ExtraBold",
-    color: "#FFFFFF",
-    textAlign: "center",
-    letterSpacing: 0.5,
-  },
-
-  buttonSubtext: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    color: "rgba(255, 255, 255, 0.8)",
-    textAlign: "center",
-  },
-
-  // Frame Preview (Debug)
-  framePreviewContainer: {
-    marginHorizontal: 24,
-    marginTop: 20,
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 2,
-    borderColor: colors.warningLight,
-  },
-
-  framePreviewLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_700Bold",
-    color: colors.warning,
-    marginBottom: 8,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-
-  framePreviewImage: {
-    width: "100%",
-    height: 150,
-    borderRadius: 8,
-    backgroundColor: "#000",
-  },
-
-  // Speech Display
-  speechContainer: {
-    marginHorizontal: 24,
-    marginTop: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    backgroundColor: "rgba(16, 51, 93, 0.2)",
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "rgba(16, 51, 93, 0.4)",
-  },
-
-  speechLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_700Bold",
-    color: colors.primary,
-    marginBottom: 6,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-
-  speechText: {
-    fontSize: 18,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.text,
-    lineHeight: 24,
-  },
-
-  // Error
-  errorContainer: {
-    marginHorizontal: 24,
-    marginTop: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    backgroundColor: colors.errorLight,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.error,
-  },
-
-  errorText: {
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.text,
-    textAlign: "center",
-  },
-
-  // Tab Content
-  tabContent: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 20,
-  },
-
-  tabTitle: {
-    fontSize: 28,
-    fontFamily: "Inter_800ExtraBold",
-    color: colors.text,
-    marginBottom: 24,
-  },
-
-  emptyState: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingVertical: 60,
-  },
-
-  emptyStateText: {
-    fontSize: 18,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textSecondary,
-    marginBottom: 8,
-  },
-
-  emptyStateSubtext: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-    color: colors.textTertiary,
-  },
-
-  // Session History Cards
-  sessionCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-
-  sessionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(148, 163, 184, 0.1)",
-  },
-
-  sessionDate: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textSecondary,
-  },
-
-  sessionDuration: {
-    fontSize: 18,
-    fontFamily: "Inter_800ExtraBold",
-    color: colors.primary,
-  },
-
-  sessionStats: {
-    flexDirection: "row",
-    gap: 20,
-  },
-
-  sessionStat: {
-    flex: 1,
-    alignItems: "center",
-  },
-
-  sessionStatValue: {
-    fontSize: 28,
-    fontFamily: "Inter_800ExtraBold",
-    color: colors.text,
-    marginBottom: 4,
-  },
-
-  sessionStatLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_500Medium",
-    color: colors.textTertiary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  settingItem: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-
-  settingLabel: {
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textSecondary,
-  },
-
-  settingValue: {
-    fontSize: 16,
-    fontFamily: "Inter_500Medium",
-    color: colors.primary,
-  },
-
-  // Bottom Tab Bar
-  tabBar: {
-    flexDirection: "row",
-    backgroundColor: colors.tabBar,
-    borderTopWidth: 1,
-    borderTopColor: colors.tabBarBorder,
-    paddingBottom: 8,
-    paddingTop: 12,
-    paddingHorizontal: 8,
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 10,
-  },
-
-  tabItem: {
-    flex: 1,
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 4,
-  },
-
-  tabIconContainer: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "transparent",
-  },
-
-  tabIconContainerActive: {
-    backgroundColor: colors.primaryLight,
-  },
-
-  tabLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.iconSecondary,
-  },
-
-  tabLabelActive: {
-    color: colors.icon,
-  },
-
-  // Spatial Engine Styles
-  spatialHeader: {
-    alignItems: "center",
-    marginBottom: 24,
-    paddingTop: 8,
-    paddingHorizontal: 16,
-  },
-  spatialHeaderIcon: {
-    marginBottom: 12,
-    backgroundColor: colors.primaryLight,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: colors.cardBorder,
-  },
-  spatialTitle: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: colors.text,
-    marginBottom: 6,
-    letterSpacing: 0.5,
-  },
-  spatialSubtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontWeight: "500",
-    letterSpacing: 0.3,
-  },
-  spatialStatusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.statusBadge,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  spatialStatusBadgeActive: {
-    backgroundColor: colors.statusBadgeActive,
-    borderColor: colors.successLight,
-  },
-  spatialStatusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.statusDot,
-    marginRight: 8,
-  },
-  spatialStatusDotActive: {
-    backgroundColor: colors.statusDotActive,
-  },
-  spatialStatusText: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-  },
-  spatialCameraWrapper: {
-    marginBottom: 20,
-    marginHorizontal: 16,
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 10,
-  },
-  spatialCameraContainer: {
-    width: width - 32,
-    height: 240,
-    borderRadius: 20,
-    overflow: "hidden",
-    borderWidth: 3,
-    borderColor: colors.cardBorder,
-    backgroundColor: colors.card,
-  },
-  spatialCamera: {
-    flex: 1,
-  },
-  spatialOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: colors.overlay,
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 12,
-  },
-  spatialOverlayText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: "700",
-    letterSpacing: 3,
-    textShadowColor: colors.shadow,
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 4,
-  },
-  spatialStatsWrapper: {
-    marginBottom: 16,
-    paddingHorizontal: 16,
-  },
-  spatialStatsContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  spatialStatCard: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 14,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  spatialStatCardHighlight: {
-    backgroundColor: colors.successLight,
-    borderColor: colors.success,
-  },
-  spatialStatIconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.primaryLight,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  spatialStatIconHighlight: {
-    backgroundColor: colors.successLight,
-  },
-  spatialStatLabel: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    fontWeight: "600",
-    marginBottom: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  spatialStatValue: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  spatialStatValueHighlight: {
-    color: colors.success,
-  },
-  spatialSpeechCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    marginHorizontal: 16,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  spatialSpeechCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-    gap: 8,
-  },
-  spatialSpeechCardTitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  spatialSpeechCardText: {
-    fontSize: 17,
-    color: colors.textSecondary,
-    fontWeight: "600",
-    lineHeight: 24,
-  },
-  spatialControlButton: {
-    marginBottom: 16,
-    marginHorizontal: 16,
-    borderRadius: 16,
-    overflow: "hidden",
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  spatialControlButtonPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.98 }],
-  },
-  spatialButtonGradient: {
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  spatialButtonIcon: {
-    marginRight: 4,
-  },
-  spatialButtonText: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-  },
-  spatialLogCard: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 14,
-    marginHorizontal: 16,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  spatialLogHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-    gap: 8,
-  },
-  spatialLogTitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    flex: 1,
-  },
-  spatialLogBadge: {
-    backgroundColor: colors.primaryLight,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  spatialLogBadgeText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  spatialLogScroll: {
-    flex: 1,
-  },
-  spatialLogEmptyContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingVertical: 40,
-  },
-  spatialLogEmpty: {
-    color: colors.textTertiary,
-    fontSize: 15,
-    fontWeight: "600",
-    marginTop: 12,
-  },
-  spatialLogEmptySubtext: {
-    color: colors.textTertiary,
-    fontSize: 12,
-    marginTop: 6,
-    textAlign: "center",
-  },
-  spatialLogEntry: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.success,
-  },
-  spatialLogEntryHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 6,
-    gap: 6,
-  },
-  spatialLogTime: {
-    fontSize: 11,
-    color: colors.textTertiary,
-    fontWeight: "600",
-  },
-  spatialLogMessage: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    lineHeight: 20,
-    fontWeight: "500",
-  },
-});
+const createStyles = () =>
+  StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: colors.bgPage,
+    },
+    gradient: {
+      flex: 1,
+    },
+    safeArea: {
+      flex: 1,
+    },
+    contentArea: {
+      flex: 1,
+    },
+    tabScroll: {
+      flex: 1,
+    },
+    tabScrollContent: {
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+      gap: spacing.md,
+    },
+    headerRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginTop: spacing.sm,
+      gap: spacing.sm,
+    },
+    headerTextWrap: {
+      flex: 1,
+      minWidth: 0,
+      paddingRight: spacing.sm,
+    },
+    brandRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    brandLogoWrap: {
+      width: 30,
+      height: 30,
+      alignItems: "center",
+      justifyContent: "center",
+      position: "relative",
+      flexShrink: 0,
+      borderRadius: 15,
+      overflow: "hidden",
+      backgroundColor: "rgba(255, 255, 255, 0.9)",
+      borderWidth: 2,
+      borderColor: colors.brand,
+    },
+    brandLogoRing: {
+      position: "absolute",
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.brand,
+      opacity: 0.35,
+    },
+    brandLogoInner: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+    },
+    brandTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 28,
+      color: colors.textPrimary,
+      letterSpacing: 0.4,
+    },
+    brandSubtitle: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 13,
+      color: colors.textMuted,
+      marginTop: 4,
+      lineHeight: 18,
+    },
+    activeBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      alignSelf: "flex-start",
+      gap: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+      borderRadius: 16,
+      backgroundColor: colors.bgInactive,
+    },
+    activeBadgeRunning: {
+      backgroundColor: "rgba(16, 185, 129, 0.15)",
+    },
+    activeDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 99,
+      backgroundColor: colors.success,
+    },
+    activeText: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 10,
+      color: colors.success,
+      letterSpacing: 0.3,
+    },
+    statsRow: {
+      flexDirection: "row",
+      gap: spacing.md,
+    },
+    statCard: {
+      flex: 1,
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+    },
+    statCardLabelRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      marginBottom: spacing.md,
+    },
+    statCardLabel: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 12,
+      color: colors.textPrimary,
+      letterSpacing: 0.4,
+    },
+    statCardValue: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 28,
+      color: colors.textPrimary,
+      marginBottom: 4,
+    },
+    statCardHint: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    detectionCard: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+    },
+    detectionHeaderRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: spacing.sm,
+      marginBottom: spacing.md,
+    },
+    detectionTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 20,
+      color: colors.textPrimary,
+      flex: 1,
+      minWidth: 0,
+      marginRight: spacing.sm,
+    },
+    detectionAge: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 14,
+      color: colors.textPrimary,
+      opacity: 0.9,
+    },
+    detectionText: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 16,
+      color: colors.textPrimary,
+      lineHeight: 22,
+    },
+    liveCard: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+    },
+    liveHeaderRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: spacing.md,
+    },
+    liveTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 24,
+      color: colors.textPrimary,
+    },
+    liveImage: {
+      width: "100%",
+      height: 180,
+      borderRadius: radius.sm,
+      marginBottom: spacing.lg,
+    },
+    livePlaceholder: {
+      height: 180,
+      borderRadius: radius.sm,
+      backgroundColor: colors.bgInactive,
+      justifyContent: "center",
+      alignItems: "center",
+      gap: spacing.sm,
+      marginBottom: spacing.lg,
+    },
+    livePlaceholderText: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 14,
+      color: colors.textMuted,
+    },
+    primaryButtonWrap: {
+      borderRadius: radius.md,
+      overflow: "hidden",
+      ...shadows.button,
+    },
+    primaryButtonPressed: {
+      opacity: 0.85,
+      transform: [{ scale: 0.99 }],
+    },
+    primaryButton: {
+      height: 56,
+      borderRadius: radius.md,
+      flexDirection: "row",
+      justifyContent: "center",
+      alignItems: "center",
+      gap: 8,
+    },
+    primaryButtonText: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 18,
+      color: colors.white,
+    },
+    historyHeader: {
+      marginTop: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    historyTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 26,
+      color: colors.textPrimary,
+    },
+    historySubtitle: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 15,
+      color: colors.textMuted,
+      marginTop: 4,
+    },
+    emptyState: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.xxl,
+      alignItems: "center",
+      gap: spacing.sm,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+    },
+    emptyStateTitle: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 18,
+      color: colors.textPrimary,
+    },
+    emptyStateText: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 14,
+      color: colors.textMuted,
+      textAlign: "center",
+    },
+    historyCard: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+    },
+    historyCardTop: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: spacing.md,
+    },
+    historyDate: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 13,
+      color: colors.textMuted,
+      flex: 1,
+      marginRight: spacing.md,
+    },
+    historyDuration: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 15,
+      color: colors.textPrimary,
+    },
+    historyStatsRow: {
+      flexDirection: "row",
+      gap: spacing.md,
+    },
+    historyStatMini: {
+      flex: 1,
+      backgroundColor: colors.bgInactive,
+      borderRadius: radius.sm,
+      padding: spacing.md,
+      alignItems: "center",
+      gap: 2,
+    },
+    historyStatValue: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 22,
+      color: colors.textPrimary,
+    },
+    historyStatLabel: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 12,
+      color: colors.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    bottomBar: {
+      flexDirection: "row",
+      borderTopWidth: 1,
+      borderTopColor: colors.borderSubtle,
+      backgroundColor: colors.bgCard,
+      paddingTop: 8,
+      paddingBottom: 10,
+      paddingHorizontal: spacing.lg,
+      ...shadows.bar,
+    },
+    tabItem: {
+      flex: 1,
+      alignItems: "center",
+      gap: 4,
+    },
+    tabIconBg: {
+      width: 40,
+      height: 40,
+      borderRadius: radius.sm,
+      justifyContent: "center",
+      alignItems: "center",
+      backgroundColor: "transparent",
+    },
+    tabIconBgActive: {
+      backgroundColor: colors.primary,
+      opacity: 0.9,
+    },
+    tabLabel: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 11,
+      color: colors.textMuted,
+      textAlign: "center",
+    },
+    tabLabelActive: {
+      color: colors.textPrimary,
+      fontFamily: "Inter_600SemiBold",
+    },
+    engineHeader: {
+      marginTop: spacing.sm,
+      marginBottom: spacing.sm,
+      gap: 6,
+    },
+    engineTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 26,
+      color: colors.textPrimary,
+    },
+    engineSubtitle: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 14,
+      lineHeight: 20,
+      color: colors.textMuted,
+    },
+    engineCard: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+      gap: spacing.md,
+    },
+    engineRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+    engineLabel: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 13,
+      color: colors.textMuted,
+    },
+    engineValue: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 16,
+      color: colors.textPrimary,
+    },
+    faceCard: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      ...shadows.card,
+      gap: spacing.md,
+    },
+    faceLabel: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 14,
+      color: colors.textPrimary,
+    },
+    faceInput: {
+      backgroundColor: colors.bgInactive,
+      borderRadius: radius.sm,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      color: colors.textPrimary,
+      paddingHorizontal: spacing.md,
+      paddingVertical: 10,
+      fontFamily: "Inter_400Regular",
+      fontSize: 14,
+    },
+    faceCaptureRow: {
+      flexDirection: "row",
+      gap: spacing.sm,
+    },
+    faceCaptureButton: {
+      flex: 1,
+      flexDirection: "row",
+      justifyContent: "center",
+      alignItems: "center",
+      gap: 6,
+      backgroundColor: colors.primary,
+      borderRadius: radius.sm,
+      paddingVertical: 10,
+    },
+    faceCaptureText: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 12,
+      color: colors.white,
+    },
+    faceResetButton: {
+      paddingHorizontal: spacing.md,
+      borderRadius: radius.sm,
+      justifyContent: "center",
+      backgroundColor: colors.bgInactive,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+    },
+    faceResetText: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 12,
+      color: colors.textPrimary,
+    },
+    faceProgressText: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 13,
+      color: colors.textMuted,
+      lineHeight: 18,
+    },
+    faceShotsRow: {
+      gap: spacing.sm,
+    },
+    faceShotThumb: {
+      width: 72,
+      height: 72,
+      borderRadius: radius.sm,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      backgroundColor: colors.bgInactive,
+    },
+    faceSaveButton: {
+      borderRadius: radius.sm,
+      backgroundColor: colors.success,
+      alignItems: "center",
+      paddingVertical: 11,
+    },
+    faceSaveButtonDisabled: {
+      opacity: 0.45,
+    },
+    faceSaveText: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 13,
+      color: colors.white,
+    },
+    savedFaceRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      borderTopWidth: 1,
+      borderTopColor: colors.borderSubtle,
+      paddingTop: spacing.md,
+    },
+    savedFaceName: {
+      fontFamily: "Inter_600SemiBold",
+      fontSize: 14,
+      color: colors.textPrimary,
+    },
+    savedFaceMeta: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 12,
+      color: colors.textMuted,
+      marginTop: 2,
+    },
+    moreRow: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.md,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+    moreRowLeft: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
+    moreRowText: {
+      fontFamily: "Inter_500Medium",
+      fontSize: 14,
+      color: colors.textPrimary,
+    },
+    moreFutureCard: {
+      backgroundColor: colors.bgCard,
+      borderRadius: radius.lg,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      padding: spacing.lg,
+      gap: 8,
+      ...shadows.card,
+    },
+    moreFutureTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 18,
+      color: colors.textPrimary,
+    },
+    moreFutureText: {
+      fontFamily: "Inter_400Regular",
+      fontSize: 14,
+      lineHeight: 20,
+      color: colors.textMuted,
+    },
+    moreSubHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.sm,
+    },
+    moreBackBtn: {
+      width: 30,
+      height: 30,
+      borderRadius: 999,
+      backgroundColor: colors.bgInactive,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+    },
+    moreBackBtnSpacer: {
+      width: 30,
+      height: 30,
+    },
+    moreSubTitle: {
+      fontFamily: "Inter_700Bold",
+      fontSize: 20,
+      color: colors.textPrimary,
+    },
+  });

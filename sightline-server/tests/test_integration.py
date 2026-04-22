@@ -1,12 +1,14 @@
 """
-Integration tests for Spatial Engine
-Tests delta behavior, silence logic, and priority rules
+Integration tests for Spatial Engine and Face Recognition module
+Tests delta behavior, silence logic, priority rules, and face DB operations.
 """
 
+import os
+import sys
 import pytest
 import time
-import sys
-sys.path.insert(0, '..')
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from engine.engine import SpatialEngine
 from engine.models import Detection, Direction, DepthBucket, BoundingBox
@@ -154,6 +156,66 @@ class TestConfidenceFiltering:
         result = engine.process_frame(detections)
         # Should be silent (no valid detections after filtering)
         assert result is None
+
+
+class TestFaceDatabase:
+    """Test face enrollment and recognition in isolation (no GPU needed)."""
+
+    def setup_method(self):
+        """Use a temp DB path so tests don't pollute the real database."""
+        import tempfile
+        from engine import face_recognition
+        self._orig_db_path = face_recognition.DB_PATH
+        self._tmpdir = tempfile.mkdtemp()
+        face_recognition.DB_PATH = os.path.join(self._tmpdir, "test_face_db.pkl")
+
+    def teardown_method(self):
+        """Restore the real DB path."""
+        from engine import face_recognition
+        face_recognition.DB_PATH = self._orig_db_path
+
+    def test_empty_db_returns_empty(self):
+        from engine.face_recognition import list_enrolled
+        assert list_enrolled() == {}
+
+    def test_enroll_and_list(self):
+        """Enrollment with no real images returns failure gracefully."""
+        from engine.face_recognition import enroll_person, list_enrolled
+        from PIL import Image
+
+        # Blank 160x160 image — MTCNN won't find a face in it
+        blank = Image.new("RGB", (160, 160), color=(128, 128, 128))
+        result = enroll_person("NoFacePerson", [blank, blank, blank])
+        # Should fail gracefully: no face detected
+        assert result["success"] is False
+        assert result["enrolled"] == 0
+        assert list_enrolled() == {}
+
+    def test_delete_nonexistent_person(self):
+        from engine.face_recognition import delete_person
+        assert delete_person("GhostPerson") is False
+
+    def test_recognize_empty_db_returns_none(self):
+        from engine.face_recognition import recognize_person
+        from PIL import Image
+        blank = Image.new("RGB", (160, 160), color=(100, 100, 100))
+        result = recognize_person(blank)
+        assert result is None
+
+    def test_recognized_name_in_engine_message(self):
+        """When recognized_name is set, engine uses it in the announcement."""
+        engine = SpatialEngine()
+        det = Detection(
+            label="person",
+            direction=Direction.FRONT,
+            distance=DepthBucket.CLOSE,
+            confidence=0.9,
+            bbox=BoundingBox(0, 0, 100, 100),
+            recognized_name="Vansh",
+        )
+        result = engine.process_frame([det])
+        assert result is not None
+        assert "Vansh" in result
 
 
 if __name__ == "__main__":

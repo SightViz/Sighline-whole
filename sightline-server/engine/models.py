@@ -37,6 +37,7 @@ class Detection:
     distance: DepthBucket
     confidence: float
     bbox: Optional[BoundingBox] = None
+    recognized_name: Optional[str] = None  # Set when a "person" is identified by face recognition
 
 @dataclass
 class EngineState:

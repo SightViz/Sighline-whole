@@ -63,7 +63,8 @@ class SpatialEngine:
         return None
 
     def _generate_enhanced_message(self, detection: Detection) -> str:
-        label = detection.label.capitalize()
+        # Use recognized name (e.g. "Vansh") if available, else generic label
+        label = detection.recognized_name or detection.label.capitalize()
         direction = detection.direction.value
         
         feet = self._estimate_feet(detection)

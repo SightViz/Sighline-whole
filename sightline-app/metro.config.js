@@ -1,8 +1,19 @@
 const { getDefaultConfig } = require("expo/metro-config");
+const { mergeConfig } = require("metro-config");
 
 const config = getDefaultConfig(__dirname);
 
-// Note: Model files are now handled server-side
-// No custom asset extensions needed for production
+const { transformer, resolver } = config;
+
+config.transformer = {
+  ...transformer,
+  babelTransformerPath: require.resolve("react-native-svg-transformer"),
+};
+
+config.resolver = {
+  ...resolver,
+  assetExts: resolver.assetExts.filter((ext) => ext !== "svg"),
+  sourceExts: [...resolver.sourceExts, "svg"],
+};
 
 module.exports = config;

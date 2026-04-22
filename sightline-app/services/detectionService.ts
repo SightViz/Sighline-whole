@@ -4,11 +4,19 @@
  */
 
 import { CameraFrame } from "./cameraService";
-import { getDetectionEndpoint } from "./config";
+import {
+  getDetectionEndpoint,
+  getAnalyzeEndpoint,
+  getFacesEnrollEndpoint,
+  getFacesListEndpoint,
+  getFacesDeleteEndpoint,
+} from "./config";
 
-// API Configuration
+// API Endpoints
 const DETECTION_ENDPOINT = getDetectionEndpoint();
-console.log("[SightViz Detection] Detection endpoint initialized:", DETECTION_ENDPOINT);
+const ANALYZE_ENDPOINT = getAnalyzeEndpoint();
+console.log("[SightViz Detection] Detection endpoint:", DETECTION_ENDPOINT);
+console.log("[SightViz Detection] Analyze endpoint:", ANALYZE_ENDPOINT);
 
 export interface DetectionResult {
   objects: DetectedObject[];
@@ -227,17 +235,9 @@ export const analyzeFrameWithSpatialEngine = async (
 ): Promise<string | null> => {
   try {
     console.log("=== ANALYZING FRAME WITH SPATIAL ENGINE ===");
-    
-    // Get analyze endpoint (replace /detect with /analyze)
-    const analyzeEndpoint = DETECTION_ENDPOINT.replace('/detect', '/analyze');
-    console.log("Endpoint:", analyzeEndpoint);
-    console.log("Frame URI:", frame.uri);
-    console.log("Timestamp:", new Date().toISOString());
-    
-    // Create FormData for file upload
+    console.log("Endpoint:", ANALYZE_ENDPOINT);
+
     const formData = new FormData();
-    
-    // React Native FormData expects a specific format
     // @ts-ignore - React Native FormData accepts this format
     formData.append("file", {
       uri: frame.uri,
@@ -245,64 +245,112 @@ export const analyzeFrameWithSpatialEngine = async (
       name: `frame_${frame.timestamp}.jpg`,
     });
 
-    console.log("FormData created, sending to Spatial Engine...");
-    console.log("Request URL:", analyzeEndpoint);
-    
-    // Send to FastAPI /analyze endpoint
-    const apiResponse = await fetch(analyzeEndpoint, {
+    const apiResponse = await fetch(ANALYZE_ENDPOINT, {
       method: "POST",
       body: formData,
-      headers: {
-        'Accept': 'application/json',
-      },
+      headers: { Accept: "application/json" },
     });
-    
+
     if (!apiResponse.ok) {
       const errorText = await apiResponse.text();
-      console.error("API Error Response:", errorText);
-      
-      // Specific handling for 413 Payload Too Large
       if (apiResponse.status === 413) {
         throw new Error(`Image too large (413). Server cannot process this size.`);
       }
-      
-      throw new Error(`API request failed: ${apiResponse.status}`);
+      throw new Error(`API request failed: ${apiResponse.status} - ${errorText}`);
     }
 
     const data: AnalyzeResponse = await apiResponse.json();
-    
-    console.log("Spatial Engine Response:", JSON.stringify(data, null, 2));
-    
+
     if (data.debug) {
-      console.log(`Latency: ${data.debug.latency_ms}ms`);
-      console.log(`Detections: ${data.debug.num_detections}`);
+      console.log(`[Spatial] Latency: ${data.debug.latency_ms}ms, Detections: ${data.debug.num_detections}`);
     }
-    
     if (data.speech) {
       console.log(`[SPEECH] "${data.speech}"`);
-    } else {
-      console.log("[SILENT] No speech output");
     }
 
     return data.speech;
-    
+
   } catch (error) {
     console.error("=== ERROR ANALYZING WITH SPATIAL ENGINE ===");
-    console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error);
-    console.error("Error message:", error instanceof Error ? error.message : String(error));
-    console.error("Full error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
-    console.error("Endpoint was:", DETECTION_ENDPOINT.replace('/detect', '/analyze'));
-    console.error("==========================================");
-    
-    // Check for specific error types
+    console.error("Error:", error instanceof Error ? error.message : String(error));
     if (error instanceof TypeError && error.message.includes("Network")) {
-      console.error("NETWORK ERROR: Cannot reach Spatial Engine server");
-      throw new Error(`Network Error: Cannot reach ${DETECTION_ENDPOINT.replace('/detect', '/analyze')}`);
+      throw new Error(`Network Error: Cannot reach ${ANALYZE_ENDPOINT}`);
     }
-    
-    // Re-throw the error so UI can display it
     throw error;
   }
+};
+
+// ============================================================================
+// FACE ENROLLMENT
+// ============================================================================
+
+export interface EnrollFaceResult {
+  success: boolean;
+  enrolled: number;
+  failed: number;
+  message: string;
+}
+
+export interface FaceProfile {
+  name: string;
+  photoCount: number;
+}
+
+/**
+ * Submit face photos to the server to enroll a person.
+ * @param name - Person's display name
+ * @param imageUris - Array of 3-4 local image URIs from the camera
+ */
+export const enrollFaceProfile = async (
+  name: string,
+  imageUris: string[]
+): Promise<EnrollFaceResult> => {
+  const endpoint = getFacesEnrollEndpoint();
+  console.log(`[Faces] Enrolling '${name}' with ${imageUris.length} photos at ${endpoint}`);
+
+  const formData = new FormData();
+  formData.append("name", name);
+  imageUris.forEach((uri, index) => {
+    // @ts-ignore - React Native FormData format
+    formData.append("images", {
+      uri,
+      type: "image/jpeg",
+      name: `face_${index}.jpg`,
+    });
+  });
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    body: formData,
+    headers: { Accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Enroll failed: ${response.status} - ${text}`);
+  }
+
+  return response.json();
+};
+
+/**
+ * Fetch the list of enrolled faces from the server.
+ */
+export const fetchEnrolledFaces = async (): Promise<FaceProfile[]> => {
+  const endpoint = getFacesListEndpoint();
+  const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Failed to fetch faces: ${response.status}`);
+  const data: { faces: Record<string, number> } = await response.json();
+  return Object.entries(data.faces).map(([name, photoCount]) => ({ name, photoCount }));
+};
+
+/**
+ * Delete an enrolled face profile from the server.
+ */
+export const deleteEnrolledFace = async (name: string): Promise<void> => {
+  const endpoint = getFacesDeleteEndpoint(name);
+  const response = await fetch(endpoint, { method: "DELETE", headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Failed to delete '${name}': ${response.status}`);
 };
 
 /**
