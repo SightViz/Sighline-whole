@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 from PIL import Image
 from openai import AsyncOpenAI
+import torch
 import io
 import uuid
 import time
@@ -41,7 +42,12 @@ app.add_middleware(
 # GLOBAL SINGLETONS
 # ============================================================================
 
+# PyTorch ≥2.6 defaults weights_only=True which blocks ultralytics custom globals.
+# Temporarily restore the pre-2.6 behaviour for this trusted model file only.
+_orig_torch_load = torch.load
+torch.load = lambda *a, **kw: _orig_torch_load(*a, **{**kw, "weights_only": False})
 model = YOLO("src/yolo26s.pt")
+torch.load = _orig_torch_load
 spatial_engine = SpatialEngine()
 
 # ============================================================================
